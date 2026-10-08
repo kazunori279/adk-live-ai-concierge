@@ -1,0 +1,53 @@
+# The wake-word monitor: openWakeWord on the HAT, posting every hit to the
+# live agent. A user unit, installed at ~/.config/systemd/user/. See README,
+# "Installing the monitor on the Pi".
+
+[Unit]
+Description=AI Terminal wake word monitor
+# A *user* unit, and this is the whole of the reason. The PipeWire graph
+# belongs to the login session, so `pipewire` is an ALSA PCM only inside it: a
+# system unit with `User=pi` gets no XDG_RUNTIME_DIR, ALSA finds no such
+# device, and the monitor starts, opens nothing, and goes on logging nothing
+# interesting while never hearing the phrase.
+#
+# `After=` and not `Requires=`. pipewire.service is socket-activated and is
+# already pulled into default.target, and a monitor that is stopped by the
+# graph restarting is a terminal that has gone deaf for the rest of the day.
+# Starting ahead of the graph is what Restart= below is for.
+After=pipewire.service
+
+[Service]
+WorkingDirectory=/home/pi/ai-terminal
+# Configure the codec before opening the capture stream (#224).
+ExecStartPre=/bin/bash /home/pi/ai-terminal/tools/mic_setup.sh
+# `--device pipewire` needs the pipewire-alsa package, which Raspberry Pi OS
+# does not install. Without it ALSA has no `pipewire` PCM at all, sounddevice
+# sees only the raw cards, and hw:2,0 is exclusive — so the monitor either
+# fails to open it or takes it away from the Chromium that got there first.
+#
+# The model and threshold are the operating point the room measurements chose
+# (README, "Ranking models: rooms, not the validation set"), and the file is
+# the one the rsync in "Running it on the Pi" puts at that path.
+#
+# localhost:8000 is the agent on either topology: the server itself on the
+# shipped Pi, the tunnel to the Mac while developing against the panel.
+ExecStart=/home/pi/.local/bin/uv run wake \
+    --device pipewire \
+    --model /home/pi/ai-terminal/training/models/hey_gemini_ls128.onnx \
+    --threshold 0.2 \
+    --webhook http://localhost:8000/api/wake
+# The same `uv run` shape as the server's unit and the same 143 for the same
+# reason, which ai-terminal.service sets out in full. `wake` differs only in
+# how it gets there: it installs no handler, so SIGTERM kills it outright
+# rather than after a graceful shutdown, and uv reports that as 128 + 15 just
+# the same. Observed here too — one stop on pi2 on 2026-09-10, one `Failed
+# with result 'exit-code'` under it.
+SuccessExitStatus=143
+# A monitor that has stopped is a terminal that cannot be spoken to, and there
+# is nothing on the panel to say so — the page looks exactly as it does when
+# nobody has said anything yet.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

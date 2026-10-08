@@ -1,0 +1,64 @@
+# The live agent itself: the FastAPI server on localhost:8000 that the kiosk
+# page and the wake monitor both talk to. A user unit, installed at
+# ~/.config/systemd/user/. See README, "The server's own unit".
+#
+# This is the shipped topology. Under the development one the server is on a
+# Mac and this unit is not installed at all — ai-terminal-tunnel.service
+# forwards the same port instead, which is why every other file names
+# localhost:8000 either way.
+
+[Unit]
+Description=AI Terminal live voice agent
+# No ordering. Both candidates read well and neither does anything here.
+# pipewire.service is the monitor's, because the browser owns the microphone
+# and this process never opens the card. network-online.target belongs to the
+# system manager, and an ordering dependency on a unit the user manager has
+# not loaded is one systemd drops — see systemd.unit(5). What this binds is
+# loopback, which is up before the manager is, and what it reaches out to is
+# reached per request with Restart= underneath.
+
+[Service]
+WorkingDirectory=/home/pi/ai-terminal
+# Management routes (/api/gws/logout, /api/forget/{user_id}, /api/wake) are
+# disabled by default to protect demo environments (e.g. Cloud Run). The Pi
+# kiosk requires them for full functionality.
+Environment=ENABLE_MANAGEMENT_ROUTES=1 AI_TERMINAL_IS_PI=1
+# Absolute, because systemd's PATH has no ~/.local/bin, and the same uv the
+# monitor's unit spells so that both run out of the environment `uv sync`
+# built. No --port: `live-server` already defaults to 8000, and 8000 is
+# written in the kiosk's URL, the monitor's --webhook and the tunnel's -L
+# forward. A flag here would be a fourth place for those to disagree.
+ExecStart=/home/pi/.local/bin/uv run live-server
+# `uv run` is not the server, it is a parent that waits for one and reports
+# what became of it. uvicorn handles SIGTERM, shuts the app down, and then
+# re-raises the signal with the default handler back in place
+# (`Server.capture_signals`), so the child dies of SIGTERM and uv turns that
+# into an exit status of 128 + 15. Measured: uv 0.11.6 exits 143 for a child
+# killed by SIGTERM and 0 for one that handles it and returns.
+#
+# systemd has no way to see that from the outside. 143 is not in the default
+# success set, so a `systemctl stop` or `restart` writes `Main process exited,
+# code=exited, status=143/n/a` and `Failed with result 'exit-code'` into the
+# journal every time — three stops, three of each, on pi2 on 2026-09-10. That
+# is the journal `pi_deploy.py`'s last two steps read and the one #10 step 3
+# asks a person to read, and a fault line on every clean shutdown teaches both
+# to skim past the next one, which will be real.
+#
+# The number and not the name. `SuccessExitStatus=SIGTERM` matches a process
+# systemd *killed*; this one exited, and the name form would be a line that
+# reads correct and matches nothing. Nothing here overrides `KillSignal=`, so
+# 15 is what arrives and 143 is the only status a clean stop can produce.
+#
+# ai-terminal-tunnel.service and ai-terminal-kiosk.service exec their binaries
+# directly, die of the signal, and systemd counts death by SIGTERM as clean —
+# measured on the same Pi, four clean stops between them and not one `Main
+# process exited` line. So this belongs to the two `uv run` units and to those.
+SuccessExitStatus=143
+# A server that has stopped is a panel showing Offline with a red dot, which
+# is the same thing it shows while the Mac is asleep under the development
+# topology — so there is nothing on the screen to tell the two apart.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

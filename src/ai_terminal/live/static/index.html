@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>ADK Live AI Concierge</title>
+    <!-- Kiosk has no favicon; an empty data URI stops the 404 on every load. -->
+    <link rel="icon" href="data:," />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL@20..48,100..700,0..1&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/style.css?v=__BUILD_STATIC__" />
+    <script id="maps-api-script"></script>
+    <script src="/static/js/app.js?v=__BUILD_STATIC__" type="module"></script>
+  </head>
+
+  <body>
+    <!-- What the panel shows when nobody is talking to it: on the first paint
+         after boot, and again once the conversation has gone quiet. Visible in
+         the markup rather than revealed by script, because the alternative is
+         a kiosk that flashes an empty conversation it has not had while
+         app.js loads. The image is left without a `src`: an `<img>` with none
+         renders nothing, so a terminal that has never generated one shows the
+         gradient underneath and still tells the time. -->
+    <div class="clock" id="clockPage">
+      <img class="clock-bg" id="clockImage" alt="" />
+      <div class="clock-face">
+        <p class="clock-time" id="clockTime">--:--</p>
+        <p class="clock-date" id="clockDate"></p>
+        <p class="clock-weather" id="clockWeather"></p>
+      </div>
+    </div>
+
+    <header id="topBar">
+      <span class="brand"><img class="brand-icon" src="/static/img/adk-icon.svg" alt="" />ADK Live AI Concierge</span>
+
+      <!-- The date, the day and the sky, for somebody standing at the panel
+           mid-conversation with the clock face hidden behind it. No prose in
+           it at all, and that is deliberate rather than terse: the only two
+           things here a language could get wrong are the weekday and the
+           month, and `Intl` writes both off `<html lang>`. The sky is a
+           glyph for a different reason: since #131 the condition word does
+           follow the setting, and it is the width that has no room for it in
+           a bar already carrying a brand, two buttons and a status pill.
+
+           `--:--` in the markup, like the clock face's, because the kiosk
+           paints before `app.js` parses and an empty bar that grows a clock
+           is worse than one that already has the shape of one. The weather
+           starts `hidden`: there is no reading until the server has one, and
+           a dash where a temperature goes reads as a broken sensor. -->
+      <div class="bar-now" id="barNow">
+        <span class="bar-date" id="barDate"></span>
+        <span class="bar-time" id="barTime">--:--</span>
+        <span class="bar-wx hidden" id="barWx">
+          <span class="material-symbols-outlined" id="barWxIcon"></span>
+          <span class="bar-temp" id="barWxTemp"></span>
+        </span>
+      </div>
+
+      <!-- The speaker. Its glyph is the only thing on the panel that tells
+           somebody standing at it that a terminal answering in silence was
+           muted rather than broken, so it lives in the bar and not in the
+           settings sheet. `volume_up` here is the resting state; app.js
+           rewrites it before anything else happens on the page. -->
+      <button
+        class="icon-btn"
+        id="volumeButton"
+        title="Speaker volume"
+        data-i18n-title="ui_speaker_volume"
+        aria-haspopup="true"
+        aria-expanded="false"
+      >
+        <span class="material-symbols-outlined" id="volumeIcon">volume_up</span>
+      </button>
+      <button class="icon-btn" id="settingsButton" title="Settings"
+              data-i18n-title="ui_settings">
+        <span class="material-symbols-outlined">tune</span>
+      </button>
+      <span class="status" id="status">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText" data-i18n="ui_status_connecting">Connecting</span>
+      </span>
+
+      <!-- Inside the header and positioned absolutely, which is not the same
+           as being a fourth item in it: an out-of-flow child of a flex
+           container is not a flex item. That is what lets `top: 100%` mean the
+           bottom edge of the bar, so the bar's height is not a number written
+           down in the stylesheet a second time. -->
+      <div class="volume-pop hidden" id="volumePop" aria-label="Speaker volume"
+           data-i18n-arialabel="ui_speaker_volume">
+        <button class="icon-btn" id="muteButton" title="Mute"
+                data-i18n-title="ui_mute">
+          <span class="material-symbols-outlined" id="muteIcon">volume_up</span>
+        </button>
+        <input
+          type="range"
+          id="volumeRange"
+          min="0"
+          max="100"
+          step="1"
+          value="100"
+          aria-label="Speaker volume"
+          data-i18n-arialabel="ui_speaker_volume"
+        />
+        <span class="volume-read" id="volumeRead">100</span>
+      </div>
+    </header>
+
+    <div class="settings-sheet hidden" id="settingsSheet">
+      <!-- Whose conversation the terminal carries on. Hidden until the server
+           says there is more than one person to choose between, so a terminal
+           with no PROFILES set looks exactly as it did. -->
+      <label for="profileSelect" id="profileLabel" class="hidden"
+             data-i18n="ui_who">Who</label>
+      <select id="profileSelect" class="hidden"></select>
+      <!-- Which language the panel itself is in. Not the language the person
+           speaks — the model still hears that and still answers in it — and
+           not what the tools search in either. Just the chrome, which used to
+           follow whatever tag the model attached to its last tool call and so
+           changed under a bilingual household mid-conversation. Filled by
+           app.js, because the option labels are the two locales `i18n.js`
+           has and that list belongs in one place. -->
+      <label for="langSelect" data-i18n="ui_language">Language</label>
+      <select id="langSelect"></select>
+      <label for="micSelect" data-i18n="ui_microphone">Microphone</label>
+      <select id="micSelect">
+        <option value="" data-i18n="ui_mic_default">System default</option>
+      </select>
+      <!-- Which voice the terminal answers in. Left empty here on purpose:
+           the server refuses a voice it does not know, so the options are
+           filled from `/api/config` rather than written twice. The five names
+           are not translated — they are the names the API knows them by. -->
+      <label for="voiceSelect" data-i18n="ui_voice">Voice</label>
+      <select id="voiceSelect"></select>
+      <label data-i18n="ui_interrupt">Interruption</label>
+      <div class="setting-check">
+        <label>
+          <input type="checkbox" id="interruptCheck" />
+          <span data-i18n="ui_interrupt_allow">Allow barge-in while speaking</span>
+        </label>
+      </div>
+      <label id="workspaceLabel">Google Workspace</label>
+      <div class="workspace-row" id="workspaceRow">
+        <p class="workspace-state" id="workspaceState">Google Workspace — Not connected</p>
+        <div class="workspace-scopes hidden" id="workspaceScopes"></div>
+        <div class="workspace-actions">
+          <button class="text-btn" id="workspaceConnectBtn" type="button">Connect</button>
+          <button class="text-btn hidden" id="workspaceDisconnectBtn" type="button">Disconnect</button>
+        </div>
+      </div>
+      <label data-i18n="ui_location">Location</label>
+      <p class="where"><span class="material-symbols-outlined">my_location</span
+        ><span id="whereText">Not set</span></p>
+      <div class="settings-actions">
+        <button class="text-btn" id="whereButton"
+                data-i18n="ui_set_on_map">Set on a map…</button>
+        <button class="text-btn" id="clearButton"
+                data-i18n="ui_clear">Clear conversation</button>
+        <!-- Two different things, so two buttons. The one above wipes the
+             screen and keeps the conversation; this one deletes it. The label
+             says "my history" because that is what goes: every thread stored
+             under the selected profile, not the one on screen. -->
+        <button class="text-btn" id="forgetButton"
+                data-i18n="ui_forget">Forget my history</button>
+        <button class="text-btn hidden" id="rebootButton"
+                data-i18n="ui_reboot">Restart terminal</button>
+      </div>
+    </div>
+
+    <!-- The map picker. A modal over the page rather than a second window:
+         the kiosk has no window manager to put one anywhere useful. -->
+    <div class="picker hidden" id="picker">
+      <div class="picker-bar">
+        <input
+          type="text"
+          id="pickerSearch"
+          placeholder="Search an address…"
+          data-i18n-placeholder="ui_search_address"
+          autocomplete="off"
+          enterkeyhint="search"
+        />
+        <button class="icon-btn" id="pickerFind" title="Search"
+                data-i18n-title="ui_search">
+          <span class="material-symbols-outlined">search</span>
+        </button>
+        <button class="icon-btn" id="pickerLocate" title="Use current position"
+                data-i18n-title="ui_use_position">
+          <span class="material-symbols-outlined">my_location</span>
+        </button>
+      </div>
+
+      <!-- The pin is a sibling of the map, not a child: the Map constructor
+           empties the element it is given. -->
+      <div class="picker-map">
+        <div class="picker-canvas" id="pickerMap"></div>
+        <div class="picker-pin">
+          <span class="material-symbols-outlined">location_on</span>
+        </div>
+      </div>
+
+      <div class="picker-foot">
+        <span class="picker-label" id="pickerLabel"
+              data-i18n="ui_drag_map">Drag the map</span>
+        <div class="picker-actions">
+          <button class="text-btn" id="pickerCancel"
+                  data-i18n="ui_cancel">Cancel</button>
+          <button class="text-btn primary" id="pickerConfirm"
+                  data-i18n="ui_set_location">Set location</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- The image preview modal (lightbox). Opens in-app when tapping image
+         thumbnails so kiosk mode does not navigate to external sites. -->
+    <div class="image-modal hidden" id="imageModal" role="dialog" aria-modal="true" aria-label="Image preview">
+      <div class="image-modal-backdrop" id="imageModalBackdrop"></div>
+      <div class="image-modal-dialog">
+        <button type="button" class="image-modal-close" id="imageModalClose"
+                aria-label="Close" title="Close">✕</button>
+        <div class="image-modal-frame">
+          <img class="image-modal-img" id="imageModalImg" src="" alt="" />
+        </div>
+        <div class="image-modal-caption" id="imageModalCaption"></div>
+      </div>
+    </div>
+
+    <!-- Google Workspace authentication companion modal for kiosk mode (#642). -->
+    <div class="gws-auth-modal hidden" id="gwsAuthModal" role="dialog" aria-modal="true" aria-label="Google Workspace sign-in">
+      <div class="gws-auth-modal-backdrop" id="gwsAuthModalBackdrop"></div>
+      <div class="gws-auth-modal-dialog">
+        <button type="button" class="gws-auth-modal-close" id="gwsAuthModalClose"
+                aria-label="✕ Cancel / Return" title="Cancel / Return">✕</button>
+        <div class="gws-auth-modal-title">Sign in to Google Workspace</div>
+        <div class="gws-auth-modal-instructions">Scan this QR code with your phone camera or visit the companion link to approve access:</div>
+        <div class="gws-auth-qr-container" id="gwsAuthQr"></div>
+        <div class="gws-auth-url-container">
+          <a class="gws-auth-url" id="gwsAuthUrl" href="#" target="_blank" rel="noopener noreferrer"></a>
+        </div>
+        <div class="gws-auth-status" id="gwsAuthStatus">
+          <span class="gws-auth-spinner" id="gwsAuthSpinner"></span>
+          <span class="gws-auth-status-text" id="gwsAuthStatusText">Waiting for approval on your device...</span>
+        </div>
+        <button type="button" class="text-btn gws-auth-cancel-btn" id="gwsAuthCancelBtn">✕ Cancel / Return</button>
+      </div>
+    </div>
+
+    <!-- Citation companion modal for kiosk mode (#701). Opens when tapping
+         citation links or chips so users can scan QR code to read source on phone. -->
+    <div class="citation-modal hidden" id="citationModal" role="dialog" aria-modal="true" aria-label="Citation source">
+      <div class="citation-modal-backdrop" id="citationModalBackdrop"></div>
+      <div class="citation-modal-dialog">
+        <button type="button" class="citation-modal-close" id="citationModalClose"
+                aria-label="✕ Close" title="Close">✕</button>
+        <div class="citation-modal-title" id="citationModalTitle">Source link</div>
+        <div class="citation-modal-instructions" id="citationModalInstructions">Scan this QR code with your phone camera to view this source:</div>
+        <div class="citation-qr-container" id="citationQr"></div>
+        <div class="citation-url-container">
+          <a class="citation-url" id="citationUrl" href="#" target="_blank" rel="noopener noreferrer"></a>
+        </div>
+        <button type="button" class="text-btn citation-modal-return-btn" id="citationModalReturnBtn">✕ Close / Return</button>
+      </div>
+    </div>
+
+    <!-- Two panes on the landscape screen, one on a portrait one. The cards
+         pane is empty in portrait: app.js puts the cards in the feed instead,
+         so the conversation still reads top to bottom. -->
+    <div class="panes">
+      <section class="chat">
+        <main class="feed" id="feed"></main>
+
+        <button class="scroll-pill hidden" id="scrollPill">
+          <span class="material-symbols-outlined">arrow_downward</span>
+        </button>
+
+        <footer id="composer">
+          <button class="mic-btn" id="micButton" title="Voice mode"
+                  data-i18n-title="ui_voice_mode">
+            <span class="material-symbols-outlined">mic</span>
+          </button>
+          <input
+            type="text"
+            id="textInput"
+            placeholder="Type instead…"
+            data-i18n-placeholder="ui_type_instead"
+            autocomplete="off"
+            enterkeyhint="send"
+          />
+          <button class="icon-btn send" id="sendButton" disabled title="Send"
+                  data-i18n-title="ui_send">
+            <span class="material-symbols-outlined">arrow_upward</span>
+          </button>
+        </footer>
+      </section>
+
+      <div class="side-panel" id="sidePanel">
+        <!-- No whitespace inside: the placeholder is a :empty rule. -->
+        <section class="cards" id="cards"></section>
+
+        <div class="starters" id="starters">
+          <p class="starters-label" data-i18n="ui_starters">Tap a chip or the mic to start, or try</p>
+          <div class="starters-group starters-context hidden" id="startersContext">
+            <span class="starters-group-label starters-heading" data-i18n="ui_starters_context">Suggestions</span>
+            <div class="starter-row">
+              <div class="starter-dynamic" id="starterDynamic"></div>
+            </div>
+          </div>
+          <div class="starters-group starters-basic">
+            <span class="starters-group-label starters-heading" data-i18n="ui_starters_basic">Basic Capabilities</span>
+            <div class="starter-row">
+              <button class="chip" data-prompt="What's the weather like today?"
+                      data-i18n-prompt="ui_ask_weather"
+                      data-topic-slot="place"
+                      data-topic-label="ui_chip_weather_of"
+                      data-topic-prompt="ui_ask_weather_of">
+                <span class="material-symbols-outlined">partly_cloudy_day</span>
+                <span data-i18n="ui_chip_weather">Today's Weather</span>
+              </button>
+              <button class="chip" data-prompt="What's on my schedule today?"
+                      data-i18n-prompt="ui_ask_schedule">
+                <span class="material-symbols-outlined">event</span>
+                <span data-i18n="ui_chip_schedule">Today's Schedule</span>
+              </button>
+              <button class="chip" data-prompt="What are my recent emails?"
+                      data-i18n-prompt="ui_ask_mail">
+                <span class="material-symbols-outlined">mail</span>
+                <span data-i18n="ui_chip_mail">Recent Emails</span>
+              </button>
+              <button class="chip" data-prompt="Find a document in Drive"
+                      data-i18n-prompt="ui_ask_docs">
+                <span class="material-symbols-outlined">description</span>
+                <span data-i18n="ui_chip_docs">Find Docs</span>
+              </button>
+              <button class="chip" data-prompt="What's in the news today?"
+                      data-i18n-prompt="ui_ask_news"
+                      data-topic-slot="subject"
+                      data-topic-label="ui_chip_news_of"
+                      data-topic-prompt="ui_ask_news_of">
+                <span class="material-symbols-outlined">newspaper</span>
+                <span data-i18n="ui_chip_news">News</span>
+              </button>
+              <button class="chip" data-prompt="How are the markets doing today?"
+                      data-i18n-prompt="ui_ask_market">
+                <span class="material-symbols-outlined">trending_up</span>
+                <span data-i18n="ui_chip_market">Market</span>
+              </button>
+              <button class="chip" data-prompt="I want to look up directions"
+                      data-i18n-prompt="ui_ask_routes"
+                      data-topic-slot="place"
+                      data-topic-label="ui_chip_routes_of"
+                      data-topic-prompt="ui_ask_routes_of">
+                <span class="material-symbols-outlined">directions</span>
+                <span data-i18n="ui_chip_routes">Routes</span>
+              </button>
+              <button class="chip" data-prompt="Find a good place to eat nearby"
+                      data-i18n-prompt="ui_ask_places"
+                      data-topic-slot="place"
+                      data-topic-label="ui_chip_places_of"
+                      data-topic-prompt="ui_ask_places_of">
+                <span class="material-symbols-outlined">explore_nearby</span>
+                <span data-i18n="ui_chip_places">Find Places</span>
+              </button>
+              <button class="chip" data-prompt="Search the web for latest tech news"
+                      data-i18n-prompt="ui_ask_web_search"
+                      data-topic-slot="subject"
+                      data-topic-label="ui_chip_web_search_of"
+                      data-topic-prompt="ui_ask_web_search_of">
+                <span class="material-symbols-outlined">search</span>
+                <span data-i18n="ui_chip_web_search">Web Search</span>
+              </button>
+              <button class="chip" data-prompt="I want to watch a video"
+                      data-i18n-prompt="ui_ask_video"
+                      data-topic-slot="subject"
+                      data-topic-label="ui_chip_video_of"
+                      data-topic-prompt="ui_ask_video_of">
+                <span class="material-symbols-outlined">smart_display</span>
+                <span data-i18n="ui_chip_video">Video</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Which build is on screen. Fixed in the corner so it is visible
+         beside anything on the panel, and hidden under the clock so it
+         never burns into the screensaver.
+
+         The text is for a person standing in the kitchen; the attribute is
+         for `app.js` to compare against `/api/config` on a reconnect. Filled
+         in by `main.root()` on the way out, so a page loaded before a deploy
+         goes on naming the build that served it (#256, #261). -->
+    <div class="build" id="buildBadge"
+         data-static-revision="__BUILD_STATIC__">__BUILD__</div>
+  </body>
+</html>

@@ -1,0 +1,147 @@
+# openWakeWord training config for "hey gemini".
+#
+#   python openWakeWord/openwakeword/train.py --training_config hey_gemini.yml \
+#     --generate_clips --augment_clips --train_model
+#
+# Run on the GCE L4 VM provisioned by tools/train_vm_setup.sh, which produces
+# every path referenced below. Only the .onnx matters: the Pi runs the ONNX
+# inference path.
+#
+# Clips and features are cached under <output_dir>/<model_name>/, and both
+# generation stages skip themselves when their output is already there, so
+# retuning any of the knobs below is `--train_model` on its own: ~12 min on an
+# L4 against ~50 min for the whole pipeline. Changing model_name or output_dir
+# throws that cache away.
+
+model_name: "hey_gemini"
+
+# One binary model that fires on any of these. They are spellings, not variants
+# of the wake word: Piper says what the phonemizer gives it, so the way to make
+# the model tolerate a Japanese speaker's "gemini" is to spell it the way
+# espeak-ng phonemizes to /dʒɛmɪniː/ and let the TTS produce both readings.
+#   hey gemini  -> heɪ dʒ'ɛmɪnaɪ   (US English)
+#   hey jemini  -> heɪ dʒɛm'ɪnaɪ
+#   hey jeminee -> heɪ dʒɛm'ɪniː   (the reading Alex's family actually uses)
+#   hey gemeenee-> heɪ dʒɛm'iːniː
+target_phrase:
+  - "hey gemini"
+  - "hey jemini"
+  - "hey jeminee"
+  - "hey gemeenee"
+
+# Phoneme-overlap negatives are generated automatically; these are the ones a
+# household actually says out loud. "hey google" is the dangerous one — same
+# carrier word, same syllable count, and it will get said in this room.
+custom_negative_phrases:
+  - "hey google"
+  - "hey siri"
+  - "hey jimmy"
+  - "gemini"
+  - "hey german"
+  - "hey jenny"
+
+n_samples: 30000
+n_samples_val: 3000
+
+tts_batch_size: 50
+augmentation_batch_size: 16
+
+piper_sample_generator_path: "./piper-sample-generator"
+output_dir: "./hey_gemini_model"
+
+# train.py flattens these into one list and augment_clips picks with
+# random.choice, so an equal file count is an equal share. 270 each = 50/50.
+#
+# mit_rirs is 40 usable rooms of somebody else's, and ls128 clears 30 of them —
+# while scoring 0.001 on Alex at 2.5 m through the display panel. The measured
+# path explains why: RT60 0.75 s and DRR -5.4 dB, worse than 38 and 37 of those
+# 40 rooms respectively. The model had never seen this room's *kind* of room.
+#
+# kitchen_rirs is that measurement (tools/measure_ir.py) blown out to 270
+# neighbours by tools/make_rir_variants.py, mostly along DRR, which is the axis
+# the wake word dies on. Keeping MIT at half is what stops this from becoming a
+# model that only works on one square of the kitchen floor.
+#
+# COMMENTED OUT: the kitchen_rirs currently on the VM were built from
+# `measure_ir.py deconv --ref`, whose near-reference division wrecks the IR —
+# convolving dry clips with its direct arrival alone returns 0.001 instead of
+# ~0.99. Training on those 270 gave 0/13 real clips at every width. Rebuild them
+# from takes/far.wav deconvolved on its own, verify the direct arrival, then put
+# this line back. See the README section on the defective IR.
+rir_paths:
+  - "./mit_rirs"
+  # - "./kitchen_rirs"
+
+# Written by tools/train_vm_setup.sh from 8 AudioSet shards, resampled to 16 kHz.
+background_paths:
+  - "./audioset_16k"
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "./validation_set_features.npy"
+
+# The terminal has to answer from across the room, so every clip is worth
+# putting through the RIR + noise chain repeatedly: same synthetic speech,
+# different room and different noise, for a fraction of the cost of generating
+# more TTS. Three rounds rather than two because RIR is now the point.
+augmentation_rounds: 3
+
+# Round 1 was trained with augment_clips' defaults, where RIR fires on half the
+# clips. The result scores 0.953 on a dry 50 cm recording of Alex and a median of
+# 0.290 through the 40 MIT rooms it was augmented with — only 21 of them usable.
+# It was not the pronunciation and it was not the distance: attenuating a dry
+# clip by 24 dB moves the score by under 0.01, because the melspectrogram
+# frontend is level-invariant. It was always the room.
+#
+# So: a room on every clip. train.py does not read this key on its own;
+# tools/train_vm_setup.sh patches it in, and applies it to the negatives too.
+# Reverberating only the positives would teach the model that a room *is* the
+# wake word.
+augmentation_probabilities:
+  RIR: 1.0
+
+feature_data_files:
+  "ACAV100M_sample": "./openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+model_type: "dnn"
+# 32 was the upstream default and it was the real bottleneck. Reverberating every
+# clip (above) only moved the room benchmark from 21/40 to 24/40, which said the
+# model could not fit what it was being shown rather than that it had not been
+# shown enough. Widening the layer, features unchanged:
+#
+#   layer_size  dry    room median  rooms usable
+#   32          0.905  0.257        24/40
+#   64          0.937  0.789        29/40
+#   128         0.990  0.982        30/40
+#
+# 128 also holds 0.001 on 5 min of ambient, so the false positives it buys back
+# are invisible at this threshold. 859 KB of ONNX, which the Pi does not notice.
+layer_size: 128
+
+steps: 50000
+max_negative_weight: 1500
+# Recall is the scarce resource here, not false positives: 5 min of this room's
+# ambient peaks at 0.007 on stock hey_jarvis and 0.001 on every model trained
+# from this config. Swept 0.2 / 0.5 / 2.0, everything else held:
+#
+#   target  accuracy  recall  fp/hr
+#   0.2     0.709     0.418   0.088
+#   0.5     0.714     0.428   0.177
+#   2.0     0.729     0.460   0.088
+#
+# 2.0 wins the table, and on Mac TTS (+11.5 dB) it peaks 0.392 against 0.5's
+# 0.084. On Alex's own voice at 3 m it loses badly: 2 hits out of 10 against
+# 0.5's 4. Both val set and TTS are synthetic, so agreeing with each other
+# proves nothing; the deployed model is the 0.5 one. Rank on a real take.
+#
+# Note also how little moved across a 10x change in the target: auto_train
+# doubled the negative weight twice even at 2.0, and recall never left the
+# 0.42-0.46 band. The negative-weight schedule is not what is holding recall
+# down, so the next real gain has to come from the data — real recordings in
+# positive_train/, not another sweep of this number.
+target_false_positives_per_hour: 0.5

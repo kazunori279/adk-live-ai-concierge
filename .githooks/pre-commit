@@ -1,0 +1,34 @@
+#!/bin/sh
+ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)
+case "$ident" in
+*"<check@localhost>"*)
+    echo "pre-commit: refusing a commit authored by check@localhost." >&2
+    echo "  This is the issue #302 fixture writing into the real repository." >&2
+    echo "  author: $ident" >&2
+    echo "  cwd:    $(pwd)" >&2
+    echo "  GIT_DIR=${GIT_DIR:-<unset>}" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$CLAUDE_CONFIG_OK" != "1" ] && [ "$CC_ROLE" != "monitor" ]; then
+    files=$(git diff --cached --name-only 2>/dev/null || true)
+    if [ -n "$files" ]; then
+        while IFS= read -r f || [ -n "$f" ]; do
+            case "$f" in
+            .claude|.claude/*|*/.claude|*/.claude/*|CLAUDE.md|*/CLAUDE.md)
+                echo "pre-commit: refusing a commit touching $f." >&2
+                echo "  .claude/ and CLAUDE.md change only on the owner's word or via the monitor." >&2
+                echo "  committer CC_ROLE='${CC_ROLE:-<unset>}'" >&2
+                echo "  To propose a change, file an issue with the owner." >&2
+                echo "  To commit as owner, set CLAUDE_CONFIG_OK=1." >&2
+                exit 1
+                ;;
+            esac
+        done <<EOF
+$files
+EOF
+    fi
+fi
+
+exit 0

@@ -1,0 +1,42 @@
+# Tracked regression corpus executed by tools/tst_runner.py on each run.
+# Schema:
+# - issue: integer issue number
+#   title: brief description of regression being guarded
+#   drive: actions to take (e.g. wake: true, wait_ms: 1000)
+#   assert: assertions to verify (e.g. selector: "#starters", visible: true, not_classes: ["hidden"])
+- issue: 472
+  title: starter chips visible on wake-word wake on empty feed
+  drive:
+    reload: true
+    wake: true
+    wait_ms: 1000
+  assert:
+    selector: "#starters"
+    visible: true
+    not_classes:
+      - "hidden"
+- issue: 542
+  title: starters flow under cards inside side-panel without being pushed below the fold
+  drive:
+    steps:
+      - reload: true
+      - wake: true
+      - wait_ms: 1000
+      - click: "#starters .chip"
+      - wait_ms: 45000
+  assert:
+    selector: "#starters"
+    visible: true
+    in_viewport: true
+    not_classes:
+      - "hidden"
+- issue: 532
+  title: touch events and pointer drag scrolling enabled on feed and side-panel
+  drive:
+    reload: true
+    wait_ms: 500
+  assert:
+    selector: "#sidePanel"
+    visible: true
+
+

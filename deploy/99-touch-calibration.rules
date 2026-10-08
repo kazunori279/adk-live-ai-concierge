@@ -1,0 +1,6 @@
+# Raspberry Pi Touch Display 2 (10"): taps land ~1.2% (14 px) below the finger.
+# Fit from 5 on-screen targets, 2026-09-06. Screen y maps to device x inverted
+# (output transform 270), so the correction lives in the matrix' first row.
+# See ~/touchcal/ for the harness that produced it.
+ACTION=="add|change", KERNEL=="event*", ATTRS{name}=="11-0041 ili_v3", \
+  ENV{LIBINPUT_CALIBRATION_MATRIX}="1.018265 0 0.003087 0 1 0"

@@ -1,0 +1,117 @@
+# Chromium in kiosk mode on the DSI panel, pointed at the forwarded port.
+# A user unit, installed at ~/.config/systemd/user/. See README, "Developing
+# against the panel".
+
+[Unit]
+Description=AI Terminal kiosk browser on the DSI panel
+# Ordering only, and deliberately no `Wants=`. `Wants=` pulled the tunnel up
+# whenever the kiosk started, whatever the tunnel's own enable state, and the
+# kiosk is WantedBy=default.target — so every login started an `ssh -N -L
+# 8000:127.0.0.1:8000`. That was right while the Mac was the only thing
+# serving 8000. It stopped being right the moment ai-terminal.service shipped:
+# the two bind the same address, the tunnel wins the race because uvicorn is
+# still importing, and the panel then shows a laptop while looking perfectly
+# healthy. It also undid `systemctl --user disable --now ai-terminal-tunnel`
+# at the next kiosk start, which is the one command the shipped Pi depends on.
+#
+# `After=` stays. It is pure ordering and starts nothing, so a developer who
+# wants the tunnel still enables or starts it by hand and still gets the kiosk
+# sequenced behind it in the same transaction — which is the whole of what the
+# old line bought them, minus the start nobody asked for.
+#
+# It was `Wants=` and not `Requires=` for a reason worth keeping written down:
+# measured on the panel, under `Requires=`, `systemctl --user stop
+# ai-terminal-tunnel` stopped the kiosk with it and starting the tunnel again
+# left the screen dark — the propagation runs one way only. The kiosk has to
+# outlive whatever is serving the port and let the page's own reconnect find
+# it again, which is now also how it survives a server restart.
+After=ai-terminal-tunnel.service
+
+[Service]
+# `Requires=` says the tunnel unit is running; it does not say the port is
+# bound. `ssh -N` binds a moment after exec, and a Chromium that arrives in
+# that moment gets a connection refused and an error page it never retries —
+# a black panel that stays black until somebody restarts the unit by hand.
+#
+# Ask the server, not the socket. `ssh -N -L` binds this end whether or not
+# anything answers on the far side, so in the ordinary daytime state — Mac
+# awake, `live-server` down — a `nc -z` gate passes in under a second and
+# Chromium gets a reset instead of a refusal, which is the same error page by
+# another route. `/api/config` is cheap, has no side effects, and returns 200
+# only once the app is importable and serving.
+#
+# `--max-time` because `curl` with no deadline is bounded only by ssh: the
+# tunnel binds this end, so a Mac that stops answering mid-connection rather
+# than refusing leaves one attempt hanging until `ServerAliveInterval=15` x
+# `ServerAliveCountMax=3` gives up — 45 s of the window on a single iteration.
+ExecStartPre=/bin/sh -c 'for _ in $(seq 60); do \
+    /usr/bin/curl -fsS --max-time 5 -o /dev/null \
+    http://127.0.0.1:8000/api/config && exit 0; sleep 2; done; exit 1'
+# The loop above is a 120 s floor and systemd's start timeout is 90 s, so
+# without this the gate is killed with a quarter of its attempts unmade and the
+# unit fails with `a timeout was exceeded` — a message that reads like the
+# server never came up, when what expired is the manager's patience with the
+# gate. 150 leaves room for the loop plus one `--max-time` attempt overrunning
+# the last sleep.
+TimeoutStartSec=150
+# WAYLAND_DISPLAY is already in the user manager's environment once labwc has
+# imported it, but a unit started at boot can be ahead of that import. Set to
+# the value the compositor uses here, which is also the one README's manual
+# `grim` recipe exports.
+Environment=WAYLAND_DISPLAY=wayland-0
+# --autoplay-policy or the first spoken answer is silent until something on
+# the page is tapped, which on a screen with no keyboard is the whole point.
+# --password-store=basic keeps Chromium from waiting on a keyring nobody will
+# unlock. The profile is its own, so a reset costs nothing.
+#
+# WebRtcPipeWireCamera off because the settings sheet lists microphones with
+# `enumerateDevices` (app.js:1368-1370), and on Wayland that makes Chromium ask
+# xdg-desktop-portal for the cameras too. Measured on the panel: a modal
+# *Allow app to Use the Camera?* over the terminal on every launch of a fresh
+# profile. There is no camera here — /dev/video19-21 are the Pi's own codec
+# and ISP nodes — so the question has no right answer and nobody is standing
+# there to give one.
+#
+# ?kiosk=1 is this page saying it is the one in the kitchen. The server cannot
+# work it out — the panel reaches a development Mac down the tunnel in
+# ai-terminal-tunnel.service, so its socket arrives from 127.0.0.1 exactly like
+# a browser tab on that Mac — and what turns on it is where the wake word
+# lands: without it a word said at this screen opens the microphone on
+# whichever page connected last. It does not change the origin, so the grant in
+# ai-terminal-chromium-policy.json still matches. See #132.
+#
+# --remote-debugging-port is not a profiling switch and it is not optional:
+# the terminal drives this browser. #162 has the agent attach over CDP so it
+# can put a page in front of whoever is standing at the panel, and so browser
+# use runs on this profile — signed in — instead of a headless throwaway that
+# is logged out of everything. A Chromium profile directory takes one process
+# at a time, so there is no second browser to attach to instead; this is the
+# only one. Load-bearing daily, so it is open at every boot rather than
+# switched on when somebody needs it.
+#
+# What that costs, written here because the flag does not say it: the devtools
+# protocol asks for no credential and is not a read-only view — whatever opens
+# the socket can navigate this page, read it, run script in it, and fetch
+# anything this browser can reach, carrying whatever sessions the profile
+# holds. Loopback is the whole of the bound. With no
+# --remote-debugging-address Chromium listens on 127.0.0.1 alone, so it is not
+# on the LAN, and it must not be put there.
+#
+# It goes ahead of the URL because url_in() in tools/pi_deploy.py takes the one
+# https?:// match off this line, and every reader of the kiosk's origin — the
+# microphone grant included — goes through it.
+# See README, "The kiosk's debugging port". #144.
+ExecStart=/usr/bin/chromium --kiosk \
+    --ozone-platform=wayland \
+    --user-data-dir=%h/.cache/ai-terminal-kiosk \
+    --password-store=basic \
+    --autoplay-policy=no-user-gesture-required \
+    --disable-features=WebRtcPipeWireCamera \
+    --remote-debugging-port=9222 \
+    --touch-events=enabled \
+    http://localhost:8000/?kiosk=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

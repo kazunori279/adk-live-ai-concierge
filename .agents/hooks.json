@@ -1,0 +1,25 @@
+{
+  "role_guard": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/role_guard.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "triage_gate": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/triage_gate.py\"",
+        "timeout": 60
+      }
+    ]
+  }
+}

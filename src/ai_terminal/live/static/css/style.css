@@ -1,0 +1,2589 @@
+/* AI Terminal — laid out for the Pi Touch Display 2.
+
+   The panel is 1200x1920, kanshi rotates it 270 and scales it 1.5, and the
+   kiosk browser ends up with 1280x800 CSS px at dpr 1.5 — measured on the
+   panel, not inferred. Landscape is how the terminal is used, and it is the
+   interesting case: 800 px of height is not enough to scroll a place card past
+   a conversation, so the two get a column each. Everything up to the `--wide`
+   breakpoint is the portrait layout — one column, cards inline — and it is
+   still what a phone gets.
+
+   The breakpoint is a width, not `orientation: landscape`: a desktop browser
+   window is landscape at any size, and at 600 px the split would leave two
+   columns too narrow to read. */
+
+:root {
+  --bg: #0e1116;
+  --surface: #171b22;
+  --surface-2: #1f242d;
+  --line: #2b323d;
+  --text: #e6e9ee;
+  --text-dim: #97a0ad;
+  --accent: #7cc4ff;
+  --accent-dim: #1d3a52;
+  --user: #2a4a63;
+  --danger: #ff6b5e;
+  --radius: 14px;
+  --tap: 48px;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+input,
+select,
+textarea {
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  max-width: 560px;
+  margin: 0 auto;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.55 system-ui, -apple-system, "Noto Sans JP", sans-serif;
+  overflow: hidden;
+}
+
+/* min-height:0 so a long card scrolls the pane instead of stretching the page
+   past the bottom of the screen — flex items refuse to shrink below content
+   without it. */
+.panes {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.chat {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Nothing to show until a tool returns; the pane appears at the breakpoint. */
+.cards {
+  display: none;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.side-panel {
+  display: none;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: "opsz" 24, "wght" 400, "FILL" 0;
+  user-select: none;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- top bar ---------- */
+
+/* `relative` for the volume popup, which hangs off the bar's bottom edge. */
+#topBar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.brand-icon {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+/* The date, the day and the sky, between the brand and the controls.
+
+   Sized in px and not in `vmin`, which is the one thing here the clock face
+   does not lend it. 15vmin is right for type read from the doorway across a
+   whole panel; in a bar beside a 15px brand and a 12px status pill it would
+   be 120px of clock in landscape and a top bar four times its own height.
+   This is chrome, so it is sized like the chrome around it.
+
+   `margin-left: auto` as well as the brand's `flex: 1`, so the group is still
+   right of centre once the brand is dropped at the narrow end. */
+.bar-now {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 22px;
+  color: var(--text-dim);
+}
+
+/* Tabular figures for the reason the face has them: without, the minute going
+   from 11 to 12 shifts everything left of it sideways. */
+.bar-time {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-wx {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.bar-wx .material-symbols-outlined { font-size: 26px; }
+
+/* A reading nothing has replaced in 25 minutes. Dimmed rather than dropped:
+   it is still the best number anybody has, and a bar that empties itself
+   whenever the WAN blinks is a bar that reads as broken. */
+.bar-wx.stale { opacity: .45; }
+
+/* What goes when the bar runs out of room, in the order it goes.
+
+   The panel is never this narrow — the body is capped at 560px in portrait
+   and the landscape breakpoint is 720 — so this is the phone somebody opens
+   the terminal on to check something. The brand goes first: it names the
+   appliance to a person already looking at it. The date goes second and takes
+   the day of the week with it, which is the cost of the last 100px; the time
+   and the temperature are what is left, because they are the two things on
+   this bar that change during a day. */
+@media (max-width: 479px) {
+  .brand { display: none; }
+}
+
+@media (max-width: 379px) {
+  .bar-date { display: none; }
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+/* Still while the socket is up, and that is the whole point of this rule.
+   Blink runs `transform`, `opacity`, `filter` and `backdrop-filter` off the
+   main thread; `box-shadow` is not on that list, so a `box-shadow` keyframe is
+   a style recalculation and a repaint on the renderer's main thread once per
+   vsync, for as long as the animation runs. Measured in headed Chromium on a
+   page built from this stylesheet, `Performance.getMetrics` over 10.0 s: 582
+   style recalculations and 138.8 ms of renderer main thread with this dot in
+   its connected state, against 0 and 0.5 ms in its offline state — and 599
+   with an opaque `position: fixed` overlay covering it, because occlusion
+   does not stop an animation. Only `display: none` does, and `sleep()` in
+   `app.js` does not hide the top bar.
+
+   So the panel paid it around the clock, including the twenty-odd hours a day
+   it is showing the screensaver clock, and it paid it precisely when nothing
+   was wrong. The pulse is worth keeping as an across-the-room signal; what it
+   was attached to was the wrong state. */
+.dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4ade80;
+}
+
+.dot.off {
+  background: var(--danger);
+}
+
+/* The ring, on the state a person should notice from the far side of the
+   kitchen. Filled rather than outlined and in the dot's own colour, so it
+   reads the way the old outward `box-shadow` spread did — there is nothing
+   underneath it to obscure. `app.js` needs no edit: `.off` is the class it
+   already toggles. */
+.dot.off::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: pulse 2.4s infinite;
+}
+
+/* `scale(2.75)` is the old 7px spread on an 8px dot: (8 + 7 + 7) / 8. */
+@keyframes pulse {
+  0% { opacity: 0.6; transform: scale(1); }
+  70%, 100% { opacity: 0; transform: scale(2.75); }
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.icon-btn:active { background: var(--surface-2); }
+
+#topBar .icon-btn { width: 38px; height: 38px; }
+
+/* ---------- the speaker ---------- */
+
+/* Muted is the state somebody has to be able to spot without reading it, so
+   it is brightness and not hue: every other icon here is `--text-dim`, and
+   this one goes to full `--text`. Deliberately not `--danger` — a muted
+   speaker is a choice somebody made, not a fault the terminal is reporting. */
+.icon-btn.muted { color: var(--text); }
+
+/* Bigger than the rest of the bar, alone among the icons in it.
+   The panel is 1280x800 CSS px on a 10" diagonal, which is 151 CSS px to the
+   inch, so the 16px these glyphs inherit from `body` is 2.7mm of glass — about
+   15 arcmin at the arm's length this thing is used at, legible but small for
+   something you glance at rather than read. 22px is 3.7mm and 21 arcmin.
+   It does not buy the room: at three metres even 24px is under 5 arcmin, which
+   is below telling one icon shape from another. See the issue. */
+#volumeIcon { font-size: 22px; }
+#settingsButton .material-symbols-outlined { font-size: 22px; }
+
+/* Hung under the bar rather than dropped into it. Above the location picker's
+   z-index 20 and below the clock's 40: a terminal left with this open still
+   goes back to being a clock, the same as it does over an open settings
+   sheet. */
+.volume-pop {
+  position: absolute;
+  top: 100%;
+  right: 14px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 8px;
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--surface-2);
+}
+
+/* The bar shrinks its buttons to 36px, and this one is inside the bar. It is
+   also the thing a finger lands on, so it keeps the full `--tap`. The id is
+   in the selector only to out-specify `#topBar .icon-btn`. */
+#topBar .volume-pop .icon-btn { width: var(--tap); height: var(--tap); }
+
+.volume-pop input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 220px;
+  height: var(--tap);
+  background: transparent;
+  cursor: pointer;
+}
+
+.volume-pop input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+}
+
+/* 28px. The browser default thumb is 12px, which on a 1280x800 panel at dpr
+   1.5 is about 3mm of glass to hit at arm's length. */
+.volume-pop input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  margin-top: -11px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Tabular, and wide enough for three digits, so the slider does not shuffle
+   sideways as the number under it goes from 9 to 10 to 100. */
+.volume-read {
+  min-width: 3ch;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---------- settings sheet ---------- */
+
+.settings-sheet {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 14px;
+}
+
+.settings-sheet label {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.settings-sheet select {
+  height: var(--tap);
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.settings-sheet .where {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-sheet .where .material-symbols-outlined {
+  flex: 0 0 auto;
+  font-size: 16px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.text-btn {
+  height: var(--tap);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* The armed half of the two-tap confirm on "Forget my history". A colour
+   change rather than a dialog: the panel has no keyboard, and a stray tap on
+   the settings sheet should not be able to delete a month of conversation. */
+.text-btn.armed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.text-btn.primary {
+  border-color: var(--accent-dim);
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.text-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workspace-state {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.workspace-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.workspace-scopes span {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.workspace-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.workspace-actions .text-btn {
+  flex: 1;
+}
+
+/* ---------- location picker ---------- */
+
+/* Fixed to the viewport rather than sized to the app column: the map wants
+   every pixel of a 10" panel, and the point of the thing is to pan a street
+   into view. Fixed also puts it over the two-pane landscape layout without
+   caring which pane it was opened from. */
+.picker {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.picker.hidden { display: none; }
+
+.picker-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.picker-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+}
+
+.picker-bar .icon-btn { color: var(--text); }
+
+.picker-map {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--surface-2);
+  touch-action: auto;
+}
+
+.picker-map * {
+  touch-action: auto;
+}
+
+.picker-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* The pin is painted at the centre and the map moves under it, so it is not in
+   the way of the finger doing the moving. A zero-sized box on the exact centre,
+   with the glyph sitting on top of it and a dot marking the spot underneath —
+   the dot because the tip of the glyph is a couple of pixels of empty font
+   metrics away from where the pin actually points. */
+.picker-pin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.picker-pin .material-symbols-outlined {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--accent);
+  font-size: 44px;
+  text-shadow: 0 2px 6px rgb(0 0 0 / 0.6);
+}
+
+.picker-pin::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.55);
+}
+
+.picker-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.picker-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.35;
+  /* Two lines, because a Japanese formatted address rarely fits in one and a
+     truncated one is unreadable in a way a truncated street name is not. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.picker-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.picker-actions .text-btn { padding: 0 16px; }
+
+/* ---------- image preview modal (lightbox) ---------- */
+
+/* Fixed overlay for inspecting full-size images without navigating away.
+   z-index: 30 sits above cards and the location picker (20) but below the
+   screensaver clock (40), so waking taps land on the clock first. */
+.image-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.image-modal.hidden {
+  display: none;
+}
+
+.image-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.image-modal-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+/* Prominent, touch-friendly close button (56px > --tap 48px) */
+.image-modal-close {
+  position: absolute;
+  top: -20px;
+  right: -20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  touch-action: manipulation;
+  z-index: 2;
+}
+
+.image-modal-close:active {
+  background: var(--surface-2);
+  transform: scale(0.94);
+}
+
+.image-modal-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 75vh;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+}
+
+.image-modal-img {
+  max-width: 100%;
+  max-height: 75vh;
+  object-fit: contain;
+  display: block;
+}
+
+.image-modal-caption {
+  margin-top: 12px;
+  color: var(--text-dim);
+  font-size: 15px;
+  text-align: center;
+  max-width: 85vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Google Workspace companion auth modal for kiosk mode (#642).
+   z-index: 30 matches image-modal (above location picker 20, below clock 40). */
+.gws-auth-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.gws-auth-modal.hidden {
+  display: none;
+}
+
+.gws-auth-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.gws-auth-modal-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  max-width: 440px;
+  width: 90vw;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+  text-align: center;
+}
+
+/* Touch-friendly close button (48px tap target) */
+.gws-auth-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.gws-auth-modal-close:active {
+  background: var(--surface);
+  transform: scale(0.94);
+}
+
+.gws-auth-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+.gws-auth-modal-instructions {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+  line-height: 1.4;
+  padding: 0 12px;
+}
+
+.gws-auth-qr-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  padding: 12px;
+  border-radius: 12px;
+  margin-bottom: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.gws-auth-qr-container svg {
+  display: block;
+  width: 180px;
+  height: 180px;
+}
+
+.gws-auth-url-container {
+  margin-bottom: 14px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 8px;
+}
+
+.gws-auth-url {
+  font-size: 12px;
+  color: var(--accent);
+  word-break: break-all;
+  text-decoration: underline;
+  max-width: 100%;
+}
+
+.gws-auth-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.gws-auth-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1.4s linear infinite;
+}
+
+.gws-auth-cancel-btn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+/* Citation companion QR modal for kiosk mode (#701).
+   z-index: 30 matches image-modal and gws-auth-modal (above location picker 20, below clock 40). */
+.citation-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.citation-modal.hidden {
+  display: none;
+}
+
+.citation-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.citation-modal-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  max-width: 440px;
+  width: 90vw;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+  text-align: center;
+}
+
+.citation-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.citation-modal-close:active {
+  background: var(--surface);
+  transform: scale(0.94);
+}
+
+.citation-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 4px;
+  margin-bottom: 8px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-modal-instructions {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+  line-height: 1.4;
+  padding: 0 12px;
+}
+
+.citation-qr-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  padding: 12px;
+  border-radius: 12px;
+  margin-bottom: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.citation-qr-container svg {
+  display: block;
+  width: 180px;
+  height: 180px;
+}
+
+.citation-url-container {
+  margin-bottom: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 8px;
+}
+
+.citation-url {
+  font-size: 12px;
+  color: var(--accent);
+  word-break: break-all;
+  max-width: 100%;
+  text-decoration: underline;
+}
+
+.citation-modal-return-btn {
+  margin-top: 4px;
+  min-height: 48px;
+  padding: 10px 24px;
+  border-radius: 24px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.citation-modal-return-btn:active {
+  background: var(--surface);
+  transform: scale(0.96);
+}
+
+/* ---------- feed ---------- */
+
+.feed {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+  padding: 14px 12px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Flex items shrink by default, so a long card would be squeezed to fit the
+   feed's height and then clipped by its own overflow:hidden. */
+.feed > * {
+  flex: 0 0 auto;
+  touch-action: pan-y;
+}
+
+/* Touch-friendly scrollbars: 14px thumb is wide enough to catch with a finger
+   on the kiosk panel, unlike the default mouse track. */
+.feed::-webkit-scrollbar,
+.side-panel::-webkit-scrollbar,
+.cards::-webkit-scrollbar {
+  width: 14px;
+}
+
+.feed::-webkit-scrollbar-track,
+.side-panel::-webkit-scrollbar-track,
+.cards::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.feed::-webkit-scrollbar-thumb,
+.side-panel::-webkit-scrollbar-thumb,
+.cards::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 7px;
+}
+
+.feed::-webkit-scrollbar-thumb:hover,
+.feed::-webkit-scrollbar-thumb:active,
+.side-panel::-webkit-scrollbar-thumb:hover,
+.side-panel::-webkit-scrollbar-thumb:active,
+.cards::-webkit-scrollbar-thumb:hover,
+.cards::-webkit-scrollbar-thumb:active {
+  background: var(--text-dim);
+}
+
+.starters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#feed > .starters {
+  margin-top: auto;
+}
+
+.starters-label {
+  margin: 0 0 2px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.starters-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.starters-group-label,
+.starters-heading {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+/* Wrapped rather than stacked. The chips were four whole sentences and a
+   column was the only thing they fit in; they are one short label per
+   capability now, and ten of those down the side of a 10" panel would push
+   the composer off the bottom. */
+.starter-dynamic {
+  display: contents;
+}
+
+.starter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  /* A flex item is not shrunk below its content, so a chip named after a long
+     topic would run off the side of the row rather than wrap on to the next
+     line of it. */
+  max-width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.chip:active { background: var(--surface-2); }
+.chip .material-symbols-outlined { color: var(--accent); font-size: 20px; }
+
+/* ---------- messages ---------- */
+
+.msg {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  word-break: break-word;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.bubble {
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: var(--user);
+  border-bottom-right-radius: 4px;
+}
+
+.msg.agent {
+  align-self: flex-start;
+  background: var(--surface);
+  border-bottom-left-radius: 4px;
+}
+
+.msg.partial { opacity: 0.85; }
+.msg.interrupted { opacity: 0.5; font-style: italic; }
+
+.msg.system {
+  align-self: center;
+  max-width: 100%;
+  padding: 2px 10px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.caret::after {
+  content: "▍";
+  margin-left: 2px;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink { to { visibility: hidden; } }
+
+.working {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.working .material-symbols-outlined {
+  font-size: 18px;
+  animation: spin 1.6s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- cards ---------- */
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Ensure child elements inside cards and bubbles delegate touch to vertical panning */
+.card > *,
+.card-head,
+.card-body,
+.card-foot,
+.card p,
+.card span,
+.msg > *,
+.bubble > * {
+  touch-action: pan-y;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.card-head .material-symbols-outlined {
+  color: var(--accent);
+  font-size: 20px;
+}
+
+.card-head .title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-body { padding: 12px; }
+
+/* ---------- browse card ---------- */
+
+/* A 1280x800 frame in a card that is a few hundred pixels wide. Fixing the
+   aspect ratio stops the card resizing on every step, which on a running job
+   is a page reflow a second. */
+.browse-shot {
+  aspect-ratio: 8 / 5;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.browse-shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.browse-shot.has-shot img { opacity: 1; }
+
+.browse-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* While it is still working, the head icon spins the way the "looking that
+   up" line does. */
+.browse:not(.done) .card-head .material-symbols-outlined {
+  animation: spin 1.4s linear infinite;
+}
+
+.browse .md:empty { display: none; }
+.browse .md { margin-top: 8px; }
+
+/* ---------- gws card ---------- */
+
+/* Up before there is an answer in it, so half a minute of waiting looks like
+   waiting rather than like nothing happened. Same spinning head as browse. */
+.gws.pending .card-head .material-symbols-outlined {
+  animation: spin 1.4s linear infinite;
+}
+
+/* The body is 12 px of padding around nothing until there is something to put
+   in it, so it stays collapsed until either the progress line or the answer
+   fills it. `:has` rather than a class the JS toggles: what is in the card is
+   what decides, and the two cannot then get out of step. */
+.gws.pending .card-body:not(:has(.gws-progress:not(:empty))) { display: none; }
+
+/* Only the line, not the empty answer under it. */
+.gws.pending .md { display: none; }
+
+.gws-progress {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* A call that ended with no answer. Dimmed and small, so it reads as the
+   absence of a result rather than as one. `:not(.with-cal)` because a failure
+   that still read the calendar puts the whole grid in this element, and
+   dimming a grid says the day is uncertain rather than that the sentence about
+   it is missing — that line dims for itself, in `.gws.failed .cal-said`. */
+.gws.failed:not(.with-cal) .md {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* ---------- calendar ---------- */
+
+/* Rows, not paragraphs. The card lives in the cards pane, which is about
+   880 px wide on the landscape panel and the width of the body inline on a
+   phone, so the day gutter and the time column are fixed and the title takes
+   what is left.
+
+   px and not `vmin`, which is what the screensaver clock uses and for a reason
+   that does not apply here: the clock fills the panel in either orientation
+   and this is a card in a column whose width the layout already decides. The
+   sizes are the weather card's — 13-15 px for a row, ~20 px for the thing you
+   are meant to see first — which is what the panel has been read at from three
+   metres since #84. */
+
+.cal {
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+/* The stretch of days the answer covers, said once. Without it a card holding
+   three rows and no dates is indistinguishable from "today". */
+.cal-span {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, .18);
+}
+
+/* The answer to what was asked, which the grid cannot give: a list of times
+   does not say "you are free after three". One line and one line only —
+   `calSaid` cuts the prose to a sentence and this clips whatever is left of
+   it, the way `.cal-title` clips a title, because two lines here is the
+   paragraph this card was built to stop printing.
+
+   Inside the card and above the days, at the size of a title rather than of
+   the small print: it is the sentence somebody walks up to the panel to read,
+   and the grid underneath is what they look at second. */
+.cal-said {
+  padding: 7px 12px;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-said + .cal-day { border-top: 1px solid var(--line); }
+
+/* On a card that failed the same line is not the answer, it is why there is
+   not one — the same dimming `.gws.failed:not(.with-cal) .md` gives a failure
+   with no grid to sit above. */
+.gws.failed .cal-said {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+.cal-day {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.cal-day + .cal-day { border-top: 1px solid var(--line); }
+
+.cal-date {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  padding-top: 2px;
+  color: var(--text-dim);
+}
+
+.cal-date b { font-size: 22px; font-weight: 600; line-height: 1; }
+.cal-date span { font-size: 11px; text-transform: uppercase; }
+
+.cal-day.today .cal-date { color: var(--accent); }
+
+.cal-rows { display: grid; gap: 4px; min-width: 0; }
+
+.cal-ev {
+  display: grid;
+  grid-template-columns: 30px 4.6em 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--surface);
+  min-width: 0;
+}
+
+/* An event nobody got round to naming. The row is still worth drawing; it is
+   just not worth reading first. */
+.cal-ev.faded .cal-title { color: var(--text-dim); font-style: italic; }
+
+/* The one happening right now, which is the only thing on this card anybody
+   walks up to it to find out. */
+.cal-ev.now {
+  background: var(--accent-dim);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.cal-live {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* One glyph wide either way, so a card does not reflow when the fallback
+   below swaps which of the two is drawn. */
+.cal-cat {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.cal-cat .material-symbols-outlined { display: none; font-size: 21px; }
+
+/* No colour emoji font on this machine — see `markEmoji` in app.js. Chromium
+   draws a hollow rectangle rather than raising, so this is the difference
+   between a card and a row of tofu. */
+.no-emoji .cal-cat .cal-emoji { display: none; }
+.no-emoji .cal-cat .material-symbols-outlined { display: inline; }
+
+.cal-time { display: grid; line-height: 1.15; }
+.cal-time b { font-size: 15px; font-weight: 600; }
+.cal-time small { font-size: 11px; color: var(--text-dim); }
+
+.cal-what { min-width: 0; }
+
+.cal-title {
+  display: block;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-bits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.cal-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-chip .material-symbols-outlined { font-size: 13px; }
+
+.cal-more {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, .18);
+}
+
+/* A day with nothing on it is an answer, and a card with no rows in it is not
+   one. Sized to be read from the same distance as the events would have
+   been. */
+.cal.empty {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 22px 12px;
+}
+
+.cal.empty .material-symbols-outlined { font-size: 40px; color: var(--accent); }
+.cal.empty b { font-size: 20px; }
+.cal.empty .cal-span { padding: 0; background: none; }
+/* Centred with the rest of the stack rather than run across the card, and
+   allowed the full width first: this is the one place the line can be the
+   longest thing in the card. */
+.cal.empty .cal-said { padding: 4px 0 0; max-width: 100%; }
+
+/* What the answer was read out of. `.links` and `.link` are inherited whole
+   from the grounding cards, so this only says the two things that differ.
+
+   `:empty` and not a class the JS toggles, for the same reason the pending
+   body above uses it: what is in the row is what decides whether there is a
+   row, and the two cannot then get out of step. It matters on every card that
+   is still waiting and on every one that failed, both of which leave it
+   empty. */
+.gws-sources:empty { display: none; }
+
+/* The name is the identity — it is what stands in for a URL nobody can click
+   at three metres — so it is the bright half, against `.link`'s dim default,
+   and the detail beside it stays dim. */
+.gws-sources .chip-label { color: var(--text); }
+.gws-sources .chip-detail { color: var(--text-dim); }
+
+/* An answer nothing could be attributed to. Dim and italic, the same way
+   `.gws.failed .md` is: this is the absence of a source, and it must not read
+   as one. */
+.gws-sources .no-source {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+/* ---------- plan card ---------- */
+
+/* Same spinning head as gws and browse, for the same reason and for longer:
+   a plan is several tool calls with a model turn in front of each. */
+.plan.pending .card-head .material-symbols-outlined {
+  animation: spin 1.4s linear infinite;
+}
+
+/* No `:has` collapse here, unlike gws. This card always has something to show
+   — the task, until the first step list replaces it — so there is never an
+   empty body to hide. */
+.plan.pending .md { display: none; }
+
+.plan-task {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.plan-steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.plan-steps:empty { display: none; }
+
+/* Done steps recede and the running ones are at full weight. The list is the
+   progress bar, so which lines you look at first is the whole job it does.
+   Several at full weight at once is the normal case, not a glitch: the planner
+   runs independent steps together, and the steps it has not started yet are
+   the ones carrying no class at all. */
+.plan-steps li.done { opacity: 0.45; }
+
+.plan-steps li.now {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The steps stay under the answer, at a remove: by then they are the account
+   of how it got there, not what it is doing. */
+.plan:not(.pending) .plan-steps {
+  margin-bottom: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.plan.failed .md {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* ---------- home cards ---------- */
+
+.home-card .card-body {
+  padding: 10px 14px;
+}
+
+.home-room {
+  margin-bottom: 12px;
+}
+
+.home-room:last-child {
+  margin-bottom: 0;
+}
+
+.home-room-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 2px;
+}
+
+.home-device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.home-device-icon {
+  font-size: 18px;
+  color: var(--text-dim);
+}
+
+.home-device-name {
+  flex: 1;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-device-state {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-dim);
+}
+
+.home-device-state.state-on {
+  background: rgba(46, 160, 67, 0.15);
+  color: #3fb950;
+  font-weight: 500;
+}
+
+.home-device-state.state-off {
+  color: var(--text-dim);
+}
+
+.home-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 4px;
+}
+
+.home-timeline-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.home-timeline-time {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: monospace;
+  min-width: 44px;
+}
+
+.home-timeline-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.home-timeline-desc {
+  flex: 1;
+  color: var(--text);
+}
+
+.home-timeline-dev {
+  font-weight: 500;
+  margin-right: 4px;
+}
+
+/* ---------- remember card ---------- */
+
+/* The topic is the card's answer, so it stays at full weight; the counts under
+   it are chrome and dim the way `.browse-status` does. A decline has no topic
+   to show and its line is dimmed whole, the same as `.plan.failed .md`. */
+.remember-count {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.remember.failed .md {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.queries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.query {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link .material-symbols-outlined { font-size: 15px; }
+
+/* Markdown inside a card body or agent bubble. */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md h4 { margin: 12px 0 6px; font-size: 14px; }
+.md ul,
+.md ol { margin: 0 0 8px; padding-left: 20px; }
+.md li { margin-bottom: 3px; }
+.md code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.md a { color: var(--accent); }
+
+/* images */
+
+.image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  padding: 12px;
+}
+
+.image-grid a {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.image-grid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-grid .src {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 4px 6px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  color: #fff;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* video */
+
+.video {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.video iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.video video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: #ff8080;
+  font-size: 14px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.video-title {
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* maps */
+
+.map {
+  height: 240px;
+  background: var(--surface-2);
+  touch-action: auto;
+}
+
+.map *,
+gmp-place-contextual,
+gmp-place-contextual * {
+  touch-action: auto;
+}
+
+gmp-place-contextual {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  color-scheme: light;
+}
+
+.route-ends {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.route-ends .material-symbols-outlined { font-size: 16px; }
+.route-ends .leg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode,
+.near {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* The area a place search was confined to. A travel mode is a word; this is
+   whatever the model passed, which can be a full street address, so it gives
+   up the rest of the head rather than pushing the place's own name out of
+   it. The title has `flex: 1` and would otherwise lose every argument. */
+.near {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* place_info */
+
+/* Four sources stacked in one card, so everything in it gives up a little
+   room: the map earns less here than on a card that is only a map, and the
+   place chips sit straight under the source chips rather than a row apart. */
+.place-card .map { height: 200px; }
+.place-card .links + .links { padding-top: 0; margin-top: -6px; }
+
+/* ---------- scroll pill ---------- */
+
+/* Absolute inside .chat rather than fixed to the viewport: in landscape the
+   chat is a column down the left, and a viewport-centred pill would float over
+   the cards. 88px clears the composer. */
+.scroll-pill {
+  position: absolute;
+  bottom: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* ---------- composer ---------- */
+
+#composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.mic-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mic-btn .material-symbols-outlined { font-size: 28px; }
+
+.mic-btn.on {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* The same defect as `.dot` above, on the one button that is animated while
+   audio is being captured — which is the worst moment to be spending the
+   renderer's main thread on a repaint. Gated on the microphone being open, so
+   it never cost the idle panel anything; converted here so that no
+   `@keyframes` block in this file interpolates a paint property, which is what
+   `js_check.py` now asserts.
+
+   An outline rather than a filled circle: this pseudo-element sits on top of
+   the glyph, and a filled one would hide it. `scale(1.36)` is the old 10px
+   spread on a 56px button: (56 + 10 + 10) / 56. */
+.mic-btn.on::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 107, 94, 0.5);
+  pointer-events: none;
+  animation: listening 1.8s ease-in-out infinite;
+}
+
+@keyframes listening {
+  0%, 100% { opacity: 0.9; transform: scale(1); }
+  50% { opacity: 0; transform: scale(1.36); }
+}
+
+#textInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--tap);
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+
+#textInput:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.icon-btn.send { color: var(--accent); }
+.icon-btn.send:disabled { color: var(--line); cursor: default; }
+
+/* ---------- weather ---------- */
+
+/* The sky is drawn with tiling backgrounds on a handful of absolutely
+   positioned layers, and animated with `transform` only. That is the whole
+   trick, and it is the reason there is no canvas here: a `transform` keyframe
+   runs on the compositor, so a hundred raindrops in one repeating gradient
+   cost the Pi one composited layer and no repaints. A hundred divs, or a
+   requestAnimationFrame particle loop, would come out of the same budget the
+   audio worklet is using. Layers per condition are capped at three; see
+   WX_LAYERS in cards.js. */
+
+.weather-card {
+  position: relative;
+  isolation: isolate;
+  color: #f2f6fb;
+  border-color: transparent;
+}
+
+.weather-card.day {
+  background: linear-gradient(170deg, #2b6ea8 0%, #4d93c4 55%, #7fb6d8 100%);
+}
+
+.weather-card.night {
+  background: linear-gradient(170deg, #0d1730 0%, #1a2846 55%, #2c3d63 100%);
+}
+
+/* Rain and snow fall out of a heavier sky than sunshine does. */
+.weather-card.day[data-condition="rain"],
+.weather-card.day[data-condition="drizzle"],
+.weather-card.day[data-condition="thunderstorm"] {
+  background: linear-gradient(170deg, #3b4653 0%, #4e5b6a 55%, #6a7787 100%);
+}
+
+.weather-card.day[data-condition="cloudy"],
+.weather-card.day[data-condition="fog"],
+.weather-card.day[data-condition="snow"] {
+  background: linear-gradient(170deg, #4a5665 0%, #63707f 55%, #8b96a3 100%);
+}
+
+.wx-sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.wx-l { position: absolute; inset: 0; will-change: transform; }
+
+/* Off screen, nothing moves. app.js hands the card its scroll container and
+   cards.js keeps `.paused` on it for as long as it is out of view. */
+.weather-card.paused .wx-l,
+.weather-card.paused .wx-l::before,
+.weather-card.paused .wx-l::after { animation-play-state: paused; }
+
+/* Someone who asked the system for less motion gets the same sky, still. The
+   rain pattern reads as texture rather than as nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .wx-l, .wx-l::before, .wx-l::after { animation: none !important; }
+}
+
+/* Sun: a disc with a conic glare turning slowly behind it. Two elements, both
+   rotating, neither repainting. */
+.wx-sun::before,
+.wx-sun::after {
+  content: "";
+  position: absolute;
+  top: -60px;
+  right: -40px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+}
+
+.wx-sun::before {
+  background: radial-gradient(circle, rgba(255, 236, 170, .95) 28%,
+                              rgba(255, 226, 140, .35) 42%, transparent 68%);
+  animation: wx-pulse 6s ease-in-out infinite;
+}
+
+.wx-sun::after {
+  background: conic-gradient(from 0deg, rgba(255, 240, 190, .3) 0 6deg,
+                             transparent 6deg 30deg);
+  mask: radial-gradient(circle, transparent 34%, #000 36% 78%, transparent 80%);
+  animation: wx-spin 40s linear infinite;
+}
+
+.weather-card.night .wx-sun::before {
+  background: radial-gradient(circle, rgba(226, 234, 255, .9) 22%,
+                              rgba(190, 205, 240, .18) 38%, transparent 62%);
+  width: 130px;
+  height: 130px;
+}
+
+.weather-card.night .wx-sun::after { display: none; }
+
+/* Clouds: one tiling row of soft blobs, translated by exactly one tile so the
+   loop is seamless. Two rows at different speeds read as depth. */
+.wx-clouds::before,
+.wx-clouds::after,
+.wx-clouds-thin::before {
+  content: "";
+  position: absolute;
+  left: -300px;
+  width: calc(100% + 600px);
+  height: 150px;
+  background-repeat: repeat-x;
+  background-size: 300px 150px;
+  background-image:
+    radial-gradient(60px 34px at 70px 82px, rgba(255, 255, 255, .55), transparent 70%),
+    radial-gradient(80px 44px at 150px 68px, rgba(255, 255, 255, .5), transparent 70%),
+    radial-gradient(52px 30px at 232px 84px, rgba(255, 255, 255, .45), transparent 70%);
+  animation: wx-drift 70s linear infinite;
+}
+
+/* The far layer is smaller, which means it cannot share the keyframes: a
+   `transform: scale(.7)` on the rule and a `translateX` in the keyframes are
+   two writers of one property, and the mismatched lists interpolate as
+   matrices — the layer grew from .7 to 1 over the cycle and snapped back.
+   Scale first in the keyframe, so the tile is translated in its own space:
+   300px there is 210 on screen, which is one scaled tile, which is what makes
+   the loop seamless. */
+.wx-clouds::after {
+  top: 44px;
+  opacity: .45;
+  animation: wx-drift-small 115s linear infinite reverse;
+}
+
+.wx-clouds-thin::before { opacity: .3; animation-duration: 130s; }
+
+.weather-card.night .wx-clouds::before,
+.weather-card.night .wx-clouds::after,
+.weather-card.night .wx-clouds-thin::before { opacity: .22; }
+
+/* Rain: two sheets of drops falling at different rates, the whole layer skewed
+   so they slant. Each tile holds a couple of drops and gaps, because a tile
+   that is filled edge to edge tiles into an unbroken horizontal band rather
+   than into rain. Translated by exactly the tile height, so it loops with no
+   seam and no second copy of the element. */
+.wx-rain,
+.wx-drizzle { transform: skewX(-9deg); }
+
+.wx-rain::before,
+.wx-rain::after,
+.wx-drizzle::before {
+  content: "";
+  position: absolute;
+  inset: -40px -40px 0;
+  background-repeat: repeat;
+  background-size: 26px 34px;
+  background-image:
+    radial-gradient(1.1px 9px at 6px 9px, rgba(220, 236, 255, .75), transparent),
+    radial-gradient(1.1px 7px at 19px 25px, rgba(220, 236, 255, .55), transparent);
+  animation: wx-fall .55s linear infinite;
+}
+
+.wx-rain::after {
+  background-size: 44px 52px;
+  background-image:
+    radial-gradient(1.4px 12px at 12px 13px, rgba(200, 222, 250, .34), transparent),
+    radial-gradient(1.4px 10px at 33px 38px, rgba(200, 222, 250, .26), transparent);
+  animation-name: wx-fall-far;
+  animation-duration: .95s;
+}
+
+.wx-drizzle::before {
+  background-size: 22px 26px;
+  background-image:
+    radial-gradient(1px 5px at 5px 6px, rgba(220, 236, 255, .45), transparent),
+    radial-gradient(1px 4px at 16px 19px, rgba(220, 236, 255, .3), transparent);
+  animation-duration: 1.1s;
+  animation-name: wx-fall-drizzle;
+}
+
+/* Snow: dots rather than lines, falling slowly, with the layer swaying so the
+   flakes do not come down on rails. */
+.wx-snow { animation: wx-sway 7s ease-in-out infinite alternate; }
+
+.wx-snow::before,
+.wx-snow::after {
+  content: "";
+  position: absolute;
+  inset: -44px 0 0;
+  background-repeat: repeat;
+  background-size: 44px 44px;
+  background-image: radial-gradient(circle 2.2px at 11px 11px, rgba(255, 255, 255, .9), transparent),
+                    radial-gradient(circle 1.6px at 33px 30px, rgba(255, 255, 255, .7), transparent);
+  animation: wx-snowfall 9s linear infinite;
+}
+
+.wx-snow::after {
+  background-size: 62px 62px;
+  opacity: .55;
+  animation-name: wx-snowfall-far;
+  animation-duration: 15s;
+}
+
+/* Fog: two wide bands sliding across each other. */
+.wx-fog::before,
+.wx-fog::after {
+  content: "";
+  position: absolute;
+  left: -50%;
+  width: 200%;
+  height: 60%;
+  background: linear-gradient(to right, transparent, rgba(226, 233, 240, .34) 35%,
+                              rgba(226, 233, 240, .34) 65%, transparent);
+  filter: blur(14px);
+  animation: wx-fogroll 26s ease-in-out infinite alternate;
+}
+
+.wx-fog::before { top: 18%; }
+.wx-fog::after { top: 52%; animation-duration: 38s; animation-direction: alternate-reverse; }
+
+/* Lightning: one overlay, dark most of the time. The keyframe is mostly zero
+   so the flash is an event rather than a flicker. */
+.wx-lightning {
+  background: radial-gradient(ellipse at 62% 12%, rgba(255, 255, 255, .95), transparent 55%);
+  opacity: 0;
+  animation: wx-flash 8s linear infinite;
+}
+
+@keyframes wx-spin { to { transform: rotate(360deg); } }
+@keyframes wx-pulse { 50% { transform: scale(1.06); } }
+@keyframes wx-drift { to { transform: translateX(300px); } }
+@keyframes wx-drift-small {
+  from { transform: scale(.7); }
+  to { transform: scale(.7) translateX(300px); }
+}
+@keyframes wx-fall { to { transform: translateY(34px); } }
+@keyframes wx-fall-far { to { transform: translateY(52px); } }
+@keyframes wx-fall-drizzle { to { transform: translateY(26px); } }
+@keyframes wx-snowfall { to { transform: translateY(44px); } }
+@keyframes wx-snowfall-far { to { transform: translateY(62px); } }
+@keyframes wx-sway { to { transform: translateX(14px); } }
+@keyframes wx-fogroll { to { transform: translateX(90px); } }
+
+@keyframes wx-flash {
+  0%, 92%, 100% { opacity: 0; }
+  93% { opacity: .85; }
+  94% { opacity: .1; }
+  95% { opacity: .65; }
+  96% { opacity: 0; }
+}
+
+/* --- the readable half --- */
+
+/* Sized so the whole card — temperature, the next twelve hours, all five days
+   and the wind-and-sunset line — fits the panel's 800 px without a scroll.
+   These paddings were tuned when the panel was believed to be 480 px tall and
+   the last line fell below the fold; they still hold, and loosening one only
+   spends height the card now has. */
+.wx-now { padding: 12px 14px 4px; }
+
+.wx-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  opacity: .85;
+}
+
+.wx-head .material-symbols-outlined { font-size: 16px; }
+
+.wx-place { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wx-time { flex-shrink: 0; opacity: .8; }
+
+/* Big enough to read from the other side of the room, which is the whole point
+   of putting the weather on a card instead of only saying it. */
+.wx-temp {
+  font-size: 62px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -2px;
+  margin: 4px 0 2px;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, .35);
+}
+
+.wx-deg { font-size: 26px; font-weight: 400; letter-spacing: 0; margin-left: 2px; }
+
+.wx-desc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.wx-desc .material-symbols-outlined { font-size: 22px; }
+
+.wx-sub { font-size: 12px; opacity: .85; margin-top: 3px; }
+
+/* Twelve hours in a scroller rather than squeezed to fit: the first four are
+   the ones anyone reads, and the rest are there if you drag. */
+.wx-hours {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 6px 10px;
+  margin-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, .14);
+  background: rgba(9, 14, 22, .24);
+}
+
+.wx-hours::-webkit-scrollbar { display: none; }
+
+.wx-hour {
+  flex: 0 0 auto;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  min-width: 46px;
+  font-size: 11px;
+}
+
+.wx-hour .material-symbols-outlined { font-size: 20px; }
+.wx-h-temp { font-size: 13px; font-weight: 600; }
+.wx-h-pop, .wx-d-pop { color: #a8dcff; font-size: 10px; }
+.faint { opacity: .35; }
+
+.wx-days {
+  padding: 4px 12px 8px;
+  background: rgba(9, 14, 22, .24);
+}
+
+.wx-day {
+  display: grid;
+  /* Track 1 is the day label, and it has to hold the longest word any
+     language names a day with. `Tomorrow` is the one that decides it: 60.4px
+     at this row's 13px, against 36.2px for `Today`, 26.4px for `Mon` and
+     24.0px for 今日. 3.5em was 45.5px and the overflow drew straight over the
+     icon column, because `.wx-d-label` has no rule of its own and this one
+     sets no `overflow`, `white-space` or `min-width` to catch it. 5.2em is
+     67.6px, which clears the widest of Helvetica, Arial and Verdana at
+     64.7px; `1fr` absorbs the extra so nothing else in the row moves.
+
+     Not `max-content`: each row is its own grid, so a content-sized track
+     would size per row and the five rows would stop lining up with each
+     other. A fixed track is what keeps the column a column. */
+  grid-template-columns: 5.2em 24px 3em 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+.wx-day + .wx-day { border-top: 1px solid rgba(255, 255, 255, .08); }
+.wx-day .material-symbols-outlined { font-size: 20px; }
+.wx-d-range { text-align: right; opacity: .8; }
+.wx-d-range b { opacity: 1; font-weight: 600; }
+
+.wx-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 6px 12px 8px;
+  font-size: 11px;
+  opacity: .8;
+  background: rgba(9, 14, 22, .38);
+}
+
+/* ---------- which build is on screen ---------- */
+
+/* The corner stamp. Fixed rather than a child of the cards pane, because that
+   pane scrolls and below the breakpoint it does not exist at all.
+
+   z-index 10 puts it under the volume popup's 30 and, the part that is load-
+   bearing, under the clock's 40: `.clock` is `inset: 0` over an opaque
+   gradient, so the screensaver hides this without a rule of its own and there
+   is no second place to keep that in step. `pointer-events: none` because
+   there is nothing here to tap and it sits over the bottom of the cards pane,
+   where a card's own controls are.
+
+   Hidden in portrait, and that is the only honest place to put it there: the
+   bottom-right corner of a portrait panel is the send button, and a stamp over
+   the control that sends the message is worse than no stamp. The panel this is
+   for is the 1280x800 landscape one. */
+.build {
+  display: none;
+  position: fixed;
+  right: 8px;
+  bottom: 3px;
+  z-index: 10;
+  pointer-events: none;
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: rgba(15, 17, 23, 0.92);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* The build on screen is not the build the server is running: the panel has
+   seen a deploy it did not manage to reload onto. Colour and one character,
+   because this is 10 px of screen and must not grow into a status widget —
+   and because the state it marks is meant to be unreachable. `checkRevision`
+   reloads on the same evidence, so a stamp that stays marked is #256 having
+   failed, which is the thing worth seeing from across the kitchen. */
+.build.stale {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.build.stale::after {
+  content: " *";
+}
+
+/* ---------- the clock ---------- */
+
+/* Fixed rather than a flex child of the body, because the body is a column
+   capped at 560px in portrait and the screensaver wants the whole panel. It
+   sits over the picker as well as the page: waking is one tap, and a modal
+   left open behind the clock must not be what that tap lands on. */
+.clock {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  overflow: hidden;
+  /* What is behind the photo, and what there is instead of one on a terminal
+     that has never generated a photo. Not flat black: an unlit rectangle in a
+     dark kitchen reads as a screen that has failed. */
+  background: radial-gradient(120% 90% at 50% 0%, #1b2533 0%, #0b0e13 70%);
+}
+
+.clock-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* The panel is 1280x800 landscape and the generated image is asked for at
+     16:9, so `cover` crops a little off the top and bottom rather than letting
+     the gradient show at the edges. */
+  object-fit: cover;
+}
+
+/* The scrim, and the reason a photorealistic image can have type over it at
+   all. A photograph carries every luminance there is somewhere in the frame,
+   so white digits are unreadable over roughly half of them; a fixed dim would
+   make the picture pointless. This is a gradient rather than a flat wash so
+   the middle of the frame — the subject — keeps its contrast, and the top and
+   bottom, where the clock and the weather line are, lose it. */
+.clock::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(6, 9, 14, .72) 0%, rgba(6, 9, 14, .12) 38%,
+                    rgba(6, 9, 14, .16) 62%, rgba(6, 9, 14, .78) 100%);
+}
+
+.clock-face {
+  position: absolute;
+  inset: 0;
+  z-index: 1; /* over the scrim, which is a sibling pseudo-element */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+  padding: 40px 32px;
+  text-align: left;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, .65);
+}
+
+/* Read from across a kitchen, not from the chair in front of it. `vmin` rather
+   than a px size because the panel is used both ways up: 15vmin is 120px on
+   the 1280x800 landscape panel and 108px on a 720x1280 portrait one, and both
+   are legible at three metres. Tabular figures so the digits do not shuffle
+   sideways as the minute changes. */
+.clock-time {
+  margin: 0;
+  font-size: 15vmin;
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.clock-date,
+.clock-weather {
+  margin: 0;
+  font-size: 3.2vmin;
+  font-weight: 400;
+  opacity: .88;
+}
+
+/* The date belongs with the time; the weather line does not, and goes to the
+   foot of the panel where the scrim is darkest again. */
+.clock-time + .clock-date { margin-top: 10px; }
+
+.clock-weather {
+  margin-top: 8px;
+}
+
+/* ---------- landscape ---------- */
+
+/* 720px, the same number app.js matches on to decide where a card goes. Change
+   one and change the other, or cards land in a pane nobody can see. */
+@media (min-width: 720px) {
+  body { max-width: none; }
+
+  /* The sheet pushes the conversation down rather than floating over it, so
+     every pixel it takes is one the transcript loses. Labels in one column,
+     what they label in the other: 260 px of stacked controls becomes 130. */
+  .settings-sheet {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    align-items: center;
+    column-gap: 14px;
+  }
+
+  .settings-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+  }
+
+  .settings-actions .text-btn { flex: 1 1 0; }
+
+  /* The chat only has to hold a bubble and the composer, and the composer is
+     the wider of the two: a 56px mic, a 48px send button and something you can
+     still type an address into. Everything left over goes to the cards, which
+     is where the maps and the photos are. */
+  .chat {
+    flex: 0 0 clamp(300px, 38%, 400px);
+    border-right: 1px solid var(--line);
+  }
+
+  .side-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-user-select: none;
+    user-select: none;
+    /* 14 and 20 are CARD_TOP and CARD_TAIL in app.js, which puts a new card's
+       top edge at the top of the pane and needs to know where that is. The
+       bottom one is a floor: `restCardAtTop` raises it to whatever the last
+       card needs below it to be able to reach the top, and drops it back. */
+    padding: 14px 12px 20px;
+    position: relative;
+  }
+
+  .side-panel > * {
+    touch-action: pan-y;
+  }
+
+  .side-panel > .starters {
+    flex: 0 0 auto;
+    margin-top: 12px;
+    padding: 0;
+    border-bottom: none;
+    overflow: visible;
+    max-height: none;
+    touch-action: pan-y;
+  }
+
+  .cards {
+    display: block;
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 0;
+    touch-action: pan-y;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .cards > * {
+    touch-action: pan-y;
+  }
+
+  .cards > * + * { margin-top: 12px; }
+
+  .cards:empty {
+    display: none;
+  }
+
+  .side-panel > .cards:empty + .starters {
+    margin-top: 0;
+  }
+
+  /* A card has the pane to itself now instead of sharing a column with the
+     conversation, so the map gets back the height the portrait card gave up.
+     The photos go the other way: the pane is 880 px wide here, and two columns
+     spent that on 412 px tiles nobody needs at that size. Three columns is a
+     273 px tile — still twice the size of a phone thumbnail — and it is what
+     puts the map back on screen with them. */
+  .image-grid { grid-template-columns: repeat(3, 1fr); }
+  .map { height: 280px; }
+  .place-card .map { height: 240px; }
+
+  /* Only in landscape: the corner is empty space here, and in portrait it is
+     the send button. */
+  .build { display: block; }
+}
+
+.msg.wake-prompt {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--accent);
+  border-radius: 20px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 18px;
+  margin: 12px auto;
+  margin-top: auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.msg.wake-prompt .material-symbols-outlined {
+  color: var(--accent);
+  font-size: 20px;
+}

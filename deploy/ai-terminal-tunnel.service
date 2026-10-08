@@ -1,0 +1,39 @@
+# Forwards this Pi's localhost:8000 to `live-server` on the development Mac.
+# A user unit, installed at ~/.config/systemd/user/. See README, "Developing
+# against the panel".
+#
+# This is the staging topology, not the shipped one: the Mac runs the server
+# and the Pi is only a screen and a microphone. #10 is the shipped one.
+
+[Unit]
+Description=Forward localhost:8000 on this Pi to the development Mac
+After=network-online.target
+Wants=network-online.target
+# The Mac is off more of the day than it is on, and this unit is meant to be
+# permanent. Without this systemd stops trying after five starts in ten
+# seconds, and the tunnel then stays dead until somebody notices it.
+StartLimitIntervalSec=0
+
+[Service]
+# `localhost` is a secure context and `http://<mac>:8000` is not. On the Pi's
+# own Chromium the difference is not a permission prompt: `navigator.media
+# Devices` is `undefined`, so the recorder throws on its first line and the
+# microphone is never asked for. Forwarding the port instead of changing the
+# URL is what keeps `getUserMedia` working, and it keeps the URL the same
+# `http://localhost:8000` in both deployments.
+#
+# AI_TERMINAL_DEV_HOST is `user@host` for the Mac. It comes from
+# ~/.config/environment.d/ai-terminal.conf, which the user manager reads at
+# login and which survives one — `systemctl --user set-environment` does not.
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    -o BatchMode=yes \
+    -L 8000:127.0.0.1:8000 ${AI_TERMINAL_DEV_HOST}
+Restart=always
+# Thirty seconds and not five. Five is right while the Mac reboots and wrong
+# as a steady state: overnight it is 720 ssh attempts an hour at a machine
+# that is asleep.
+RestartSec=30
+
+[Install]
+WantedBy=default.target

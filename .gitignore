@@ -1,0 +1,45 @@
+.venv/
+# Both hold the account password hash and Wi-Fi credentials.
+custom.toml
+cloud-init/
+
+# Holds Google Cloud project ids and API keys.
+.env
+
+# Documents pulled out of the owner's Google Workspace by the gws tool.
+gws_cache/
+
+# The household's conversations, kept on disk so they survive a reboot.
+sessions.db*
+
+# The picture behind the clock. Kept across reboots because #86 pays a model
+# per image, and out of the tree because the Pi deploy is a file copy.
+screensaver/
+
+# Voice takes. The real ones live on the Pi where they were recorded; this is
+# a scratch copy, and it is the household's voices.
+recordings/
+
+# The issue monitor's dashboard. Rewritten every half hour from the open
+# queue, so it is a view of GitHub rather than a source file, and committing
+# it would put a fresh revision in the history on every tick.
+current_issues.md
+
+*.png
+
+# The tester's run dashboard and backing metric store. Rewritten / appended
+# on every test run, so they are views and history of test runs rather
+# than source files.
+current_test_results.md
+tst_metrics.jsonl
+
+# Local agent settings and Python caches.
+.claude/settings.local.json
+__pycache__/
+*.pyc
+
+# Private acoustic measurements and OAuth files.
+training/rirs/*.wav
+*token*.json
+*credentials*.json
+home-mcp-client.json
