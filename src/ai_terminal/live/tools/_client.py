@@ -286,17 +286,8 @@ def _api_key() -> str | None:
 
 
 def grounding_model() -> str:
-    """Model used by the sidecar grounding calls.
-
-    Hydrogen keeps the extra round trip short enough to stay inside a spoken
-    turn. That is the decision; which generation is not, and this one sat on
-    2.5 for a month after the other defaults moved, while the README's
-    own sub-agent benchmark was being re-run on `gemini-3.5-flash-lite`. A
-    default nobody reads back is a default nobody notices, so
-    `tools/models_check.py` reads it back: it fails when a newer name in the
-    same family is written down anywhere this repo runs one.
-    """
-    return os.getenv("GROUNDING_MODEL", "gemini-4-hydrogen")
+    """Model for grounding, recaps, and suggested follow-up questions."""
+    return os.getenv("GROUNDING_MODEL", "gemini-3.5-flash-lite")
 
 
 def search_url() -> str:

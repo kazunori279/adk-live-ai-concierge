@@ -122,7 +122,7 @@ file from there, and `.gitignore:7` keeps it out of commits, which is why the
 | `SCREENSAVER_SEASON_DAYS` | how many days of weather that picture is drawn from, defaults to `7`; anything empty, unparseable or outside 1-92 falls back to it. Asked for on the first refresh of each local day and reused until the next, so the window costs one request a day rather than 48 |
 | `LIVE_MODEL` | defaults to `gemini-3.8-live` |
 | `LIVE_VOICE` | which voice a terminal nobody has asked answers in — see [Voice](#voice) |
-| `GROUNDING_MODEL` | sidecar grounding model, defaults to `gemini-4-hydrogen` |
+| `GROUNDING_MODEL` | grounding, recap, and follow-up model, defaults to `gemini-3.5-flash-lite` |
 | `GWS_MODEL`, `GWS_LOCATION` | Workspace sub-agent, defaults to `gemini-4-hydrogen` on `global` |
 | `GWS_BIN` | path to the `gws` binary; found on `PATH` when unset |
 | `GWS_CACHE_DIR` | where exported documents are kept, defaults to `gws_cache` |
