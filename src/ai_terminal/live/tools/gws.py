@@ -1172,7 +1172,7 @@ def build_gws_agent() -> Agent:
         # Pinned to the global endpoint, which is the only one serving these
         # models.
         model=Gemini(
-            model=os.getenv("GWS_MODEL", "gemini-3.8-flash"),
+            model=os.getenv("GWS_MODEL", "gemini-4-hydrogen"),
             client_kwargs={"location": os.getenv("GWS_LOCATION", "global")},
         ),
         instruction=_instruction,

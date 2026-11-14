@@ -5,7 +5,7 @@ Evaluates:
 2. Visual friction and interface defects from captured screenshots.
 3. Multi-turn conversational context retention.
 
-Uses gemini-3.8-flash with thinking_level=HIGH, executing concurrently after
+Uses gemini-4-hydrogen with thinking_level=HIGH, executing concurrently after
 scenarios complete to avoid inline latency degradation.
 """
 
@@ -22,7 +22,7 @@ except ImportError:
     genai = None
     types = None
 
-MODEL_NAME = os.getenv("BROWSE_MODEL", "gemini-3.8-flash")
+MODEL_NAME = os.getenv("BROWSE_MODEL", "gemini-4-hydrogen")
 
 
 def get_client():

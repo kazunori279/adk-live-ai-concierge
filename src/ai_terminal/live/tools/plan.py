@@ -1058,7 +1058,7 @@ def build_plan_agent() -> Agent:
         # so it can take the seconds that deciding what to do next costs.
         # Pinned to the global endpoint, which is the only one serving these.
         model=Gemini(
-            model=os.getenv("PLAN_MODEL", "gemini-3.8-flash"),
+            model=os.getenv("PLAN_MODEL", "gemini-4-hydrogen"),
             client_kwargs={"location": os.getenv("PLAN_LOCATION", "global")},
         ),
         instruction=_instruction,

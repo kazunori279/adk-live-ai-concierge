@@ -1194,8 +1194,8 @@ print("\n== _thinking: off, in the spelling the model takes ==")
 # it (0, 189, 0 thought tokens over three identical calls); 2.5 rejects
 # `thinking_level` and honours the budget every time.
 with env(BROWSE_MODEL=None):
-    check("the default is 3.8 Flash", browser._model(), "gemini-3.8-flash")
-    check("and 3.x asks for a level, not a budget",
+    check("the default is 4 Hydrogen", browser._model(), "gemini-4-hydrogen")
+    check("and 3.x+ asks for a level, not a budget",
           browser._thinking().thinking_level, browser.types.ThinkingLevel.LOW)
     check("with no budget beside it",
           browser._thinking().thinking_budget, None)
@@ -1222,7 +1222,7 @@ with env(BROWSE_MODEL=None), decide() as call:
                                "1 a", []),
           {"act": "answer", "text": "42"})
     check("and it named the configured model",
-          call.sent["model"], "gemini-3.8-flash")
+          call.sent["model"], "gemini-4-hydrogen")
     check("thinking is off in the request, not only in the helper",
           call.sent["config"].thinking_config.thinking_level,
           browser.types.ThinkingLevel.LOW)

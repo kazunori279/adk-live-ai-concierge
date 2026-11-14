@@ -297,7 +297,7 @@ async def measure(args) -> int:
         # `gws_cache.cache_dir` is memoised on first use.
         from ai_terminal.live.tools.gws import build_gws_agent
         agent = build_gws_agent()
-        print(f"model {os.getenv('GWS_MODEL', 'gemini-3.8-flash')}, "
+        print(f"model {os.getenv('GWS_MODEL', 'gemini-4-hydrogen')}, "
               f"cache {scratch}, {args.runs} run(s) per question\n")
 
         runs = {"cold": [], "warm": []}

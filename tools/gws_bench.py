@@ -137,7 +137,7 @@ async def main() -> int:
     args = parser.parse_args()
 
     agent = build_gws_agent()
-    print(f"model {os.getenv('GWS_MODEL', 'gemini-3.8-flash')}, "
+    print(f"model {os.getenv('GWS_MODEL', 'gemini-4-hydrogen')}, "
           f"{args.runs} run(s) per question\n")
 
     worse = False

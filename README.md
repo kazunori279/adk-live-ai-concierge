@@ -124,13 +124,13 @@ and committable — which is why the `cp` above is the way to make one.
 | `SCREENSAVER_SEASON_DAYS` | how many days of weather that picture is drawn from, defaults to `7`; anything empty, unparseable or outside 1-92 falls back to it. Asked for on the first refresh of each local day and reused until the next, so the window costs one request a day rather than 48 |
 | `LIVE_MODEL` | defaults to `gemini-3.8-live` |
 | `LIVE_VOICE` | which voice a terminal nobody has asked answers in — see [Voice](#voice) |
-| `GROUNDING_MODEL` | sidecar grounding model, defaults to `gemini-3.5-flash-lite` |
-| `GWS_MODEL`, `GWS_LOCATION` | Workspace sub-agent, defaults to `gemini-3.8-flash` on `global` |
+| `GROUNDING_MODEL` | sidecar grounding model, defaults to `gemini-4-hydrogen` |
+| `GWS_MODEL`, `GWS_LOCATION` | Workspace sub-agent, defaults to `gemini-4-hydrogen` on `global` |
 | `GWS_BIN` | path to the `gws` binary; found on `PATH` when unset |
 | `GWS_CACHE_DIR` | where exported documents are kept, defaults to `gws_cache` |
 | `GWS_CACHE_MAX_FILES`, `GWS_CACHE_MAX_BYTES` | what the cache is allowed to hold before the oldest go, defaults to 200 files and 64 MB |
 | `SESSIONS_DB`, `SESSION_IDLE_GAP_S`, `SESSION_RETAIN_S`, `PROFILES`, `RECAP_BUDGET_S`, `RECAP_INPUT_CHARS` | conversation history — see [Conversation history](#conversation-history) |
-| `BROWSE_MODEL` | picks each browser step, defaults to `gemini-3.8-flash` on `global` |
+| `BROWSE_MODEL` | picks each browser step, defaults to `gemini-4-hydrogen` on `global` |
 | `BROWSE_MAX_STEPS`, `BROWSE_BUDGET_S`, `BROWSE_ALLOWLIST`, `BROWSE_CHROMIUM` | the rest of the browser tool — see [The browser tool](#the-browser-tool) |
 | `ALLOWED_HOSTS` | names this server answers to besides `localhost` and `127.0.0.1`, which is what both topologies use; anything else is refused with a 400 before it reaches a route |
 
@@ -601,7 +601,7 @@ env var, because the schedule is the feature.
 ### Google Workspace
 
 `gws` is the one tool that is not a grounding call. It is a sub-agent —
-`gemini-3.8-flash` on its own ADK `Runner` — that drives the
+`gemini-4-hydrogen` on its own ADK `Runner` — that drives the
 [`gws` CLI](https://github.com/googleworkspace/cli) against the person's own
 calendar, mail, Drive, Docs and Keep. The Live agent asks it for something in
 a sentence and gets one Markdown answer back; the loop of reading docs,

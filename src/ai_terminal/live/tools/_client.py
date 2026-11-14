@@ -288,15 +288,15 @@ def _api_key() -> str | None:
 def grounding_model() -> str:
     """Model used by the sidecar grounding calls.
 
-    Flash-Lite keeps the extra round trip short enough to stay inside a
-    spoken turn. That is the decision; which Flash-Lite is not, and this one
-    sat on 2.5 for a month after the other defaults moved, while the README's
+    Hydrogen keeps the extra round trip short enough to stay inside a spoken
+    turn. That is the decision; which generation is not, and this one sat on
+    2.5 for a month after the other defaults moved, while the README's
     own sub-agent benchmark was being re-run on `gemini-3.5-flash-lite`. A
     default nobody reads back is a default nobody notices, so
     `tools/models_check.py` reads it back: it fails when a newer name in the
     same family is written down anywhere this repo runs one.
     """
-    return os.getenv("GROUNDING_MODEL", "gemini-3.5-flash-lite")
+    return os.getenv("GROUNDING_MODEL", "gemini-4-hydrogen")
 
 
 def search_url() -> str:
@@ -494,7 +494,7 @@ global_client.cache_clear = clear_client_cache
 def grounding_client() -> genai.Client:
     """Return a genai client for the grounding model.
 
-    3.x models (such as the default `gemini-3.5-flash-lite`) are served on
+    3.x/4.x models (such as the default `gemini-4-hydrogen`) are served on
     `location="global"` and 404 on regional endpoints like `us-east1`.
     Delegates to :func:`global_client`.
     """

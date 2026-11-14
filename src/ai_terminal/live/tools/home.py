@@ -616,7 +616,7 @@ def build_home_agent() -> Agent:
         description=DESCRIPTION,
         input_schema=HomeRequest,
         model=Gemini(
-            model=os.getenv("HOME_MODEL", "gemini-3.8-flash"),
+            model=os.getenv("HOME_MODEL", "gemini-4-hydrogen"),
             client_kwargs={"location": os.getenv("HOME_LOCATION", "global")},
         ),
         instruction=HOME_INSTRUCTION,

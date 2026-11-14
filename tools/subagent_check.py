@@ -335,7 +335,7 @@ def main() -> None:
     with env(GWS_MODEL=None, GWS_LOCATION=None,
              GOOGLE_CLOUD_LOCATION="us-east1"):
         model = gws.build_gws_agent().canonical_model
-        check("the default is 3.8 Flash", model.model, "gemini-3.8-flash")
+        check("the default is 4 Hydrogen", model.model, "gemini-4-hydrogen")
         # Vertex serves both of these from `global` and 404s everywhere else,
         # so the endpoint cannot follow GOOGLE_CLOUD_LOCATION like its
         # neighbours do. `env_check.py` pins the same split for `browse`.

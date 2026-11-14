@@ -302,7 +302,7 @@ WALLS = (
 
 
 def _model() -> str:
-    return os.getenv("BROWSE_MODEL", "gemini-3.8-flash")
+    return os.getenv("BROWSE_MODEL", "gemini-4-hydrogen")
 
 
 # The major version out of a model name, for the one config field whose

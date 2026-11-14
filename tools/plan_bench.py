@@ -532,7 +532,7 @@ def main(argv=None) -> int:
 async def live(args) -> int:
     """Dispatch the tasks and print what each one cost."""
     agent = plan_mod.build_plan_agent()
-    print(f"model {os.getenv('PLAN_MODEL', 'gemini-3.8-flash')}, "
+    print(f"model {os.getenv('PLAN_MODEL', 'gemini-4-hydrogen')}, "
           f"{args.runs} run(s) per task\n")
     for name in args.task or TASKS:
         print(f"{name}: {TASKS[name]['task']}")
