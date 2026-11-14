@@ -174,31 +174,111 @@ def _need(value: str, what: str) -> str:
 _WAKE = unit(WAKE_UNIT)
 _WAKE_EXEC = _need(one(_WAKE, "Service", "ExecStart") or "", "ExecStart=")
 
-# The directory the rsync writes and the unit runs out of. One string, in the
-# unit, and everything below that needs a path on the Pi is relative to it.
-PI_DIR = _need(one(_WAKE, "Service", "WorkingDirectory") or "",
-               "WorkingDirectory=")
-PI_USER = PurePosixPath(PI_DIR).parent.name
-LOCK_FILE = f"{PI_DIR}/.deploy.lock"
-LOCK_MAX_AGE_S = 600
+DEFAULT_USER = "pi"
+DEFAULT_HOST = "raspberrypi"
+DOTENV_PATH = ROOT / ".env"
 
-# `uv` is not on PATH in a non-interactive ssh shell, which is why the unit
-# spells it absolutely. Taking it from there means the installer and the unit
-# cannot disagree about which uv built the environment the unit runs in.
-UV = _need(_WAKE_EXEC.split()[0], "a command in its ExecStart=")
-
-# The model path is parsed, never spelled: `scp`ing the unit without a fresh
-# tree under it gives Restart=always looping on a missing file every five
-# seconds forever, with the only evidence in a journal nobody is reading.
-MODEL = _need(flag(_WAKE_EXEC, "--model"), "a --model on its ExecStart=")
-MODEL_LOCAL = ROOT / MODEL.removeprefix(PI_DIR + "/")
+# Raw paths from the unit files, carrying systemd's `%h` home specifier so the
+# shipped units run unchanged under any login account on the Pi.
+_RAW_PI_DIR = _need(one(_WAKE, "Service", "WorkingDirectory") or "",
+                    "WorkingDirectory=")
+_RAW_UV = _need(_WAKE_EXEC.split()[0], "a command in its ExecStart=")
+_RAW_MODEL = _need(flag(_WAKE_EXEC, "--model"), "a --model on its ExecStart=")
+MODEL_LOCAL = ROOT / _RAW_MODEL.removeprefix(_RAW_PI_DIR + "/")
 
 _KIOSK_EXEC = one(unit(KIOSK_UNIT), "Service", "ExecStart") or ""
-KIOSK_USER_DATA = _need(flag(_KIOSK_EXEC, "--user-data-dir"),
-                        "a --user-data-dir on its ExecStart=").replace(
-                            "%h", f"/home/{PI_USER}")
+_RAW_KIOSK_USER_DATA = _need(flag(_KIOSK_EXEC, "--user-data-dir"),
+                             "a --user-data-dir on its ExecStart=")
 POLICY_ORIGIN = origin(url_in(_KIOSK_EXEC) or "")
 POLICY_DIR = "/etc/chromium/policies/managed"
+
+LOCK_MAX_AGE_S = 600
+
+
+def expand_home(raw: str, home: str | None = None) -> str:
+    """Expand systemd's `%h` specifier against the target Pi account's home."""
+    target = PI_HOME if home is None else home
+    return raw.replace("%h", target)
+
+
+def uv_lock_digest(root: Path | None = None) -> str:
+    """SHA-256 of `uv.lock`, used to skip `uv sync` when dependencies did not move."""
+    lock = (root if root is not None else ROOT) / "uv.lock"
+    return hashlib.sha256(lock.read_bytes()).hexdigest() if lock.is_file() else ""
+
+
+UV_LOCK_DIGEST = uv_lock_digest()
+
+
+def _dotenv_values(path: Path | None = None) -> dict[str, str]:
+    """Read simple KEY=VALUE pairs from the local `.env` without mutating os.environ."""
+    env_file = DOTENV_PATH if path is None else path
+    if not env_file.is_file():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1].strip()
+        elif " #" in val:
+            val = val.split(" #", 1)[0].strip()
+        if key:
+            values[key] = val
+    return values
+
+
+def default_host(dotenv_path: Path | None = None) -> str:
+    """Target host from `PI_HOST` (env or local `.env`), falling back to `raspberrypi`."""
+    env_val = os.environ.get("PI_HOST", "").strip()
+    if env_val:
+        return env_val
+    file_val = _dotenv_values(dotenv_path).get("PI_HOST", "").strip()
+    return file_val or DEFAULT_HOST
+
+
+def configured_user(host: str = "", dotenv_path: Path | None = None) -> str | None:
+    """Explicit target user from `user@host` or `PI_USER` (env or local `.env`)."""
+    if "@" in host:
+        prefix = host.split("@", 1)[0].strip()
+        if prefix:
+            return prefix
+    env_val = os.environ.get("PI_USER", "").strip()
+    if env_val:
+        return env_val
+    file_val = _dotenv_values(dotenv_path).get("PI_USER", "").strip()
+    return file_val or None
+
+
+def configured_home(dotenv_path: Path | None = None) -> str | None:
+    """Explicit remote home path from `PI_HOME` (env or local `.env`), if set."""
+    env_val = os.environ.get("PI_HOME", "").strip()
+    if env_val:
+        return env_val
+    file_val = _dotenv_values(dotenv_path).get("PI_HOME", "").strip()
+    return file_val or None
+
+
+PI_USER = DEFAULT_USER
+PI_HOME = f"/home/{PI_USER}"
+PI_DIR = expand_home(_RAW_PI_DIR, PI_HOME)
+LOCK_FILE = f"{PI_DIR}/.deploy.lock"
+UV = expand_home(_RAW_UV, PI_HOME)
+MODEL = expand_home(_RAW_MODEL, PI_HOME)
+UV_LOCK_STAMP = f"{PI_DIR}/.venv/.uv-lock.stamp"
+KIOSK_USER_DATA = expand_home(_RAW_KIOSK_USER_DATA, PI_HOME)
 
 # The port the panel opens, and therefore the port the server has to be holding
 # for the panel to be looking at it. Parsed out of the kiosk's URL for the
@@ -362,12 +442,14 @@ APT_DESKTOP = ("chromium", "labwc", "kanshi", "alsa-utils",
 PACKAGES = APT_AUDIO + APT_DESKTOP
 
 # Spelled here and in README.md's rsync block on purpose — see the module
-# docstring. `.env` differs on the Pi, `gws_cache` belongs to whichever machine
-# fetched the documents, and `screensaver` and `sessions.db*` live at the
-# destination: losing them costs the household's conversations and buys a 2K
-# generation to replace a picture that was already correct.
-EXCLUDES = (".venv", ".env", "gws_cache", "__pycache__", "screensaver",
-            "sessions.db*", "*.png")
+# docstring. `.git`, `.claude` and `.agents` stay on the laptop so standalone
+# clones never ship git history or coding-agent hooks to the SD card. `.env`
+# differs on the Pi, `gws_cache` belongs to whichever machine fetched the
+# documents, and `screensaver` and `sessions.db*` live at the destination:
+# losing them costs the household's conversations and buys a 2K generation to
+# replace a picture that was already correct.
+EXCLUDES = (".git", ".claude", ".agents", ".venv", ".env", "gws_cache",
+            "__pycache__", "screensaver", "sessions.db*", "*.png")
 
 
 # --------------------------------------------------------------------------
@@ -419,13 +501,14 @@ class Resource:
         return f"{self.dest}/{self.target_filename}"
 
 
-UNIT_DIR = f"/home/{PI_USER}/.config/systemd/user"
-KANSHI_DIR = f"/home/{PI_USER}/.config/kanshi"
-LABWC_DIR = f"/home/{PI_USER}/.config/labwc"
 UDEV_RULES_DIR = "/etc/udev/rules.d"
-WIREPLUMBER_DIR = f"/home/{PI_USER}/.config/wireplumber/wireplumber.conf.d"
-PI_CONFIG_DIR = f"/home/{PI_USER}/.config/ai-terminal"
 GOOGLE_HOME_CREDENTIALS = ("home-mcp-token.json", "home-mcp-client.json")
+
+UNIT_DIR = f"{PI_HOME}/.config/systemd/user"
+KANSHI_DIR = f"{PI_HOME}/.config/kanshi"
+LABWC_DIR = f"{PI_HOME}/.config/labwc"
+WIREPLUMBER_DIR = f"{PI_HOME}/.config/wireplumber/wireplumber.conf.d"
+PI_CONFIG_DIR = f"{PI_HOME}/.config/ai-terminal"
 
 # Where the deploy says which revision it just copied. systemd's own mechanism
 # for a value that cannot be in the unit — the SHA is not knowable when the
@@ -441,50 +524,53 @@ REVISION_CONF = f"{DROPIN}/revision.conf"
 # of separate deploy and restart processes.
 KIOSK_STAMP = f"{UNIT_DIR}/.kiosk-launch.stamp"
 
-PANEL_RESOURCES = (
-    Resource("the kanshi config", KANSHI_CONFIG, KANSHI_DIR,
-             target_name="config"),
-    Resource("the labwc rc.xml", LABWC_CONFIG, LABWC_DIR,
-             target_name="rc.xml"),
-    Resource("the touch calibration rule", TOUCH_RULES, UDEV_RULES_DIR,
-             sudo=True,
-             reload="sudo udevadm control --reload && sudo udevadm trigger"),
-    Resource("the WirePlumber config", WIREPLUMBER_CONFIG, WIREPLUMBER_DIR),
-)
 
-RESOURCES = (
-    Resource("the server", SERVER_UNIT, UNIT_DIR, "ai-terminal", RUNNING),
-    Resource("the wake monitor's unit", WAKE_UNIT, UNIT_DIR,
-             "ai-terminal-wake", RUNNING),
-    Resource("the microphone grant", POLICY, POLICY_DIR, sudo=True),
-    # Copied, since #183. It was not, on the argument that changing it blanks
-    # the panel — but the panel is blanked for the length of one Chromium
-    # start, and the alternative was a procedure that depends on somebody
-    # remembering an `scp`. The day it failed: #145's `Wants=` removal was
-    # carried to pi2 by hand at 09:29 and #144's `--remote-debugging-port`,
-    # two and a half hours later, was not — so the port #162 attaches to was
-    # closed on the one machine that runs the kiosk, and no deploy would have
-    # opened it. The restart stays conditional on the file having changed, so
-    # the blank costs a deploy that edited the unit and not every deploy.
-    Resource("the kiosk", KIOSK_UNIT, UNIT_DIR, "ai-terminal-kiosk", RUNNING,
-             compare=True),
-    # The journal drop-in (#191). Copied to /etc/systemd/journald.conf.d so
-    # journald sees it, with a reload so the running daemon re-reads
-    # Storage=persistent and flushes before anything fails.
-    Resource("the journal", JOURNAL, JOURNAL_DIR, sudo=True,
-             reload="sudo systemctl restart systemd-journald && "
-                    "sudo journalctl --flush"),
-    *PANEL_RESOURCES,
-    # Present and stopped. The file stays because it is how the panel is
-    # developed against a Mac, and a shipped Pi that comes up with it enabled
-    # forwards its own 8000 to a laptop — so the kiosk reaches whatever the
-    # tunnel found rather than the server one directory away, and on a night
-    # the Mac is asleep it reaches nothing at all. Not copied: a Pi that has
-    # never had it is a Pi the shipped topology is happy with, and installing
-    # it is *Developing against the panel*'s step.
-    Resource("the tunnel", TUNNEL_UNIT, UNIT_DIR, "ai-terminal-tunnel",
-             INSTALLED, copy=False, compare=True),
-)
+def _build_panel_resources() -> tuple[Resource, ...]:
+    return (
+        Resource("the kanshi config", KANSHI_CONFIG, KANSHI_DIR,
+                 target_name="config"),
+        Resource("the labwc rc.xml", LABWC_CONFIG, LABWC_DIR,
+                 target_name="rc.xml"),
+        Resource("the touch calibration rule", TOUCH_RULES, UDEV_RULES_DIR,
+                 sudo=True,
+                 reload="sudo udevadm control --reload && sudo udevadm trigger"),
+        Resource("the WirePlumber config", WIREPLUMBER_CONFIG, WIREPLUMBER_DIR),
+    )
+
+
+def _build_resources(panel: tuple[Resource, ...]) -> tuple[Resource, ...]:
+    return (
+        Resource("the server", SERVER_UNIT, UNIT_DIR, "ai-terminal", RUNNING),
+        Resource("the wake monitor's unit", WAKE_UNIT, UNIT_DIR,
+                 "ai-terminal-wake", RUNNING),
+        Resource("the microphone grant", POLICY, POLICY_DIR, sudo=True),
+        # Copied, since #183. It was not, on the argument that changing it
+        # blanks the panel — but the panel is blanked for the length of one
+        # Chromium start, and the alternative was a procedure that depends on
+        # somebody remembering an `scp`. The restart stays conditional on the
+        # file having changed, so the blank costs a deploy that edited the unit
+        # and not every deploy.
+        Resource("the kiosk", KIOSK_UNIT, UNIT_DIR, "ai-terminal-kiosk",
+                 RUNNING, compare=True),
+        # The journal drop-in (#191). Copied to /etc/systemd/journald.conf.d so
+        # journald sees it, with a reload so the running daemon re-reads
+        # Storage=persistent and flushes before anything fails.
+        Resource("the journal", JOURNAL, JOURNAL_DIR, sudo=True,
+                 reload="sudo systemctl restart systemd-journald && "
+                        "sudo journalctl --flush"),
+        *panel,
+        # Present and stopped. The file stays because it is how the panel is
+        # developed against a Mac, and a shipped Pi that comes up with it
+        # enabled forwards its own 8000 to a laptop. Not copied: a Pi that has
+        # never had it is a Pi the shipped topology is happy with, and
+        # installing it is *Developing against the panel*'s step.
+        Resource("the tunnel", TUNNEL_UNIT, UNIT_DIR, "ai-terminal-tunnel",
+                 INSTALLED, copy=False, compare=True),
+    )
+
+
+PANEL_RESOURCES = _build_panel_resources()
+RESOURCES = _build_resources(PANEL_RESOURCES)
 
 
 # --------------------------------------------------------------------------
@@ -651,14 +737,18 @@ def _policy_file(code: int, out: str):
                    f"{mode} {owner}:{group}", WRONG)
 
 
-_PANEL_COOKIES_CMD = (
-    f"python3 -c \"import sqlite3; "
-    f"db = sqlite3.connect('file:{KIOSK_USER_DATA}/Default/Network/Cookies?mode=ro', uri=True); "
-    f"cur = db.cursor(); "
-    f"cur.execute(\\\"SELECT coalesce(sum(host_key like '%.google.com' AND name IN ('SID', '__Secure-1PSID')), 0), count(*) FROM cookies\\\"); "
-    f"row = cur.fetchone(); "
-    f"print(f'{{row[0]}} {{row[1]}}')\" 2>&1"
-)
+def _build_panel_cookies_cmd() -> str:
+    return (
+        f"python3 -c \"import sqlite3; "
+        f"db = sqlite3.connect('file:{KIOSK_USER_DATA}/Default/Network/Cookies?mode=ro', uri=True); "
+        f"cur = db.cursor(); "
+        f"cur.execute(\\\"SELECT coalesce(sum(host_key like '%.google.com' AND name IN ('SID', '__Secure-1PSID')), 0), count(*) FROM cookies\\\"); "
+        f"row = cur.fetchone(); "
+        f"print(f'{{row[0]}} {{row[1]}}')\" 2>&1"
+    )
+
+
+_PANEL_COOKIES_CMD = _build_panel_cookies_cmd()
 
 
 def _panel_session(code: int, out: str):
@@ -807,87 +897,99 @@ def _file_probe(resource: Resource) -> Probe:
         _sha256_matches(resource.source, resource.remote_path))
 
 
-PROBES: tuple[Probe, ...] = (
-    Probe("the OS, the kernel and the interpreter",
-          "cat /etc/os-release; uname -mr; python3 -V",
-          _os),
-    Probe("the audio packages",
-          "dpkg-query -W -f '${Status} ${Package} ${Version}\\n' "
-          + " ".join(APT_AUDIO) + " 2>&1",
-          _packages(APT_AUDIO)),
-    Probe("the desktop packages",
-          "dpkg-query -W -f '${Status} ${Package} ${Version}\\n' "
-          + " ".join(APT_DESKTOP) + " 2>&1",
-          _packages(APT_DESKTOP)),
-    Probe("uv, at the absolute path the unit spells",
-          f"{UV} --version 2>&1", _uv),
-    Probe("the project's virtualenv",
-          f"cd {PI_DIR} && .venv/bin/wake --help >/dev/null 2>&1 "
-          "&& echo wake-ok || echo wake-broken",
-          _venv),
-    Probe("the ALSA route into the session's PipeWire graph",
-          "aplay -L 2>/dev/null | grep '^pipewire' || true", _alsa),
-    Probe("the capture card", "arecord -l 2>&1 || true", _card),
-    Probe("the default audio source",
-          "XDG_RUNTIME_DIR=/run/user/1000 wpctl status 2>&1 || true",
-          _default_source),
-    Probe("the HAT's overlay",
-          "grep -n '^dtoverlay=respeaker' /boot/firmware/config.txt || true",
-          _overlay),
-    Probe("the journald drop-in, or there is no per-user journal",
-          f"test -f {JOURNAL_DIR}/{JOURNAL.name} "
-          "&& echo present || echo absent",
-          _present("installed")),
-    Probe("AI_TERMINAL_DEV_HOST, which the tunnel exits without",
-          f"cat /home/{PI_USER}/.config/environment.d/ai-terminal.conf 2>&1",
-          _dev_host),
-    Probe("a current copy of this directory",
-          f"test -d {PI_DIR}/deploy && echo present || echo absent",
-          _present(f"{PI_DIR}/deploy is there")),
-    Probe("the model the unit's --model names",
-          f"stat -c %s {MODEL} 2>/dev/null || true", _model),
-    # A name whose value is still there once quotes and spaces come off, and
-    # the value is thrown away on the Pi before anything comes back.
-    # `.env.example` ships `HOME_LOCATION=` with nothing on the end, so a file
-    # made by copying it has the name and no address — `where` strips that to
-    # "" and gives up, and a probe that matched the bare name would have
-    # called the file finished. `GWS_CACHE_DIR=""` is the same nothing written
-    # by somebody who has used a shell before, and python-dotenv hands the app
-    # the same empty string for it, so the quotes have to come off here too.
-    # `\047` is a literal single quote that fits inside the single-quoted awk
-    # program; mawk on pi2 takes it. Still names only: awk runs on the far
-    # side of the ssh and prints `$1`.
-    #
-    # The third `gsub` is the separators, and it is `BROWSE_ALLOWLIST`'s
-    # (#229). That value is a comma-separated list, and `browser._allowlist`
-    # drops every field that is blank — so `BROWSE_ALLOWLIST=" , , "` is the
-    # empty list to the app and a set key to the two rules above, which is a
-    # green row over a server whose attached browse refuses to start. Every
-    # comma is removed rather than only the leading and trailing ones, since
-    # this is only ever asked whether anything is left: a value with one real
-    # character in it survives, whatever punctuation is around it. Applied to
-    # every name and not just this one, because a bare comma is not a value
-    # for any of them.
-    Probe("the keys the Pi's own .env sets, which the rsync will not copy",
-          r"""awk -F= '/^[A-Z_]+=/ {v = substr($0, index($0, "=") + 1); """
-          r"""gsub(/^[ \t]+|[ \t]+$/, "", v); """
-          r"""gsub(/^["\047]+|["\047]+$/, "", v); """
-          r"""gsub(/[ \t,]/, "", v); """
-          r"""if (v != "") print $1}' """
-          f"{PI_DIR}/.env 2>/dev/null || true",
-          _env_keys),
-    Probe("the microphone grant, where Chromium reads managed policy",
-          f"stat -c '%a %U %G' {POLICY_DIR}/{POLICY.name} 2>&1",
-          _policy_file),
-    Probe("the Google account in the panel's Chromium profile",
-          _PANEL_COOKIES_CMD, _panel_session),
-    Probe("linger, or the monitor is up only while somebody is watching",
-          f"loginctl show-user {PI_USER} -p Linger 2>&1", _linger),
-    Probe("the microphone bias DAPM keeps powering down",
-          "sudo i2cget -f -y 1 0x18 0x19 2>&1", _bias),
-) + tuple(_unit_probe(r) for r in RESOURCES if r.unit_name) \
-  + tuple(_content_probe(r) for r in RESOURCES if r.unit_name and r.compare) \
-  + tuple(_file_probe(r) for r in PANEL_RESOURCES)
+def _build_probes() -> tuple[Probe, ...]:
+    return (
+        Probe("the OS, the kernel and the interpreter",
+              "cat /etc/os-release; uname -mr; python3 -V",
+              _os),
+        Probe("the audio packages",
+              "dpkg-query -W -f '${Status} ${Package} ${Version}\\n' "
+              + " ".join(APT_AUDIO) + " 2>&1",
+              _packages(APT_AUDIO)),
+        Probe("the desktop packages",
+              "dpkg-query -W -f '${Status} ${Package} ${Version}\\n' "
+              + " ".join(APT_DESKTOP) + " 2>&1",
+              _packages(APT_DESKTOP)),
+        Probe("uv, at the absolute path the unit spells",
+              f"{UV} --version 2>&1", _uv),
+        Probe("the project's virtualenv",
+              f"cd {PI_DIR} && .venv/bin/wake --help >/dev/null 2>&1 "
+              "&& echo wake-ok || echo wake-broken",
+              _venv),
+        Probe("the ALSA route into the session's PipeWire graph",
+              "aplay -L 2>/dev/null | grep '^pipewire' || true", _alsa),
+        Probe("the capture card", "arecord -l 2>&1 || true", _card),
+        Probe("the default audio source",
+              "XDG_RUNTIME_DIR=/run/user/$(id -u) wpctl status 2>&1 || true",
+              _default_source),
+        Probe("the HAT's overlay",
+              "grep -n '^dtoverlay=respeaker' /boot/firmware/config.txt || true",
+              _overlay),
+        Probe("the journald drop-in, or there is no per-user journal",
+              f"test -f {JOURNAL_DIR}/{JOURNAL.name} "
+              "&& echo present || echo absent",
+              _present("installed")),
+        Probe("AI_TERMINAL_DEV_HOST, which the tunnel exits without",
+              f"cat {PI_HOME}/.config/environment.d/ai-terminal.conf 2>&1",
+              _dev_host),
+        Probe("a current copy of this directory",
+              f"test -d {PI_DIR}/deploy && echo present || echo absent",
+              _present(f"{PI_DIR}/deploy is there")),
+        Probe("the model the unit's --model names",
+              f"stat -c %s {MODEL} 2>/dev/null || true", _model),
+        # A name whose value is still there once quotes and spaces come off, and
+        # the value is thrown away on the Pi before anything comes back.
+        Probe("the keys the Pi's own .env sets, which the rsync will not copy",
+              r"""awk -F= '/^[A-Z_]+=/ {v = substr($0, index($0, "=") + 1); """
+              r"""gsub(/^[ \t]+|[ \t]+$/, "", v); """
+              r"""gsub(/^["\047]+|["\047]+$/, "", v); """
+              r"""gsub(/[ \t,]/, "", v); """
+              r"""if (v != "") print $1}' """
+              f"{PI_DIR}/.env 2>/dev/null || true",
+              _env_keys),
+        Probe("the microphone grant, where Chromium reads managed policy",
+              f"stat -c '%a %U %G' {POLICY_DIR}/{POLICY.name} 2>&1",
+              _policy_file),
+        Probe("the Google account in the panel's Chromium profile",
+              _PANEL_COOKIES_CMD, _panel_session),
+        Probe("linger, or the monitor is up only while somebody is watching",
+              f"loginctl show-user {PI_USER} -p Linger 2>&1", _linger),
+        Probe("the microphone bias DAPM keeps powering down",
+              "sudo i2cget -f -y 1 0x18 0x19 2>&1", _bias),
+    ) + tuple(_unit_probe(r) for r in RESOURCES if r.unit_name) \
+      + tuple(_content_probe(r) for r in RESOURCES if r.unit_name and r.compare) \
+      + tuple(_file_probe(r) for r in PANEL_RESOURCES)
+
+
+PROBES: tuple[Probe, ...] = _build_probes()
+
+
+def configure_user(user: str = DEFAULT_USER, home: str | None = None) -> None:
+    """Recompute every account-derived path on the Pi for `user` and `home`."""
+    global PI_USER, PI_HOME, PI_DIR, LOCK_FILE, UV, MODEL, UV_LOCK_STAMP
+    global KIOSK_USER_DATA, UNIT_DIR, KANSHI_DIR, LABWC_DIR, WIREPLUMBER_DIR
+    global PI_CONFIG_DIR, DROPIN, REVISION_CONF, KIOSK_STAMP
+    global PANEL_RESOURCES, RESOURCES, _PANEL_COOKIES_CMD, PROBES
+    PI_USER = user
+    PI_HOME = home if home else f"/home/{user}"
+    PI_DIR = expand_home(_RAW_PI_DIR, PI_HOME)
+    LOCK_FILE = f"{PI_DIR}/.deploy.lock"
+    UV = expand_home(_RAW_UV, PI_HOME)
+    MODEL = expand_home(_RAW_MODEL, PI_HOME)
+    UV_LOCK_STAMP = f"{PI_DIR}/.venv/.uv-lock.stamp"
+    KIOSK_USER_DATA = expand_home(_RAW_KIOSK_USER_DATA, PI_HOME)
+    UNIT_DIR = f"{PI_HOME}/.config/systemd/user"
+    KANSHI_DIR = f"{PI_HOME}/.config/kanshi"
+    LABWC_DIR = f"{PI_HOME}/.config/labwc"
+    WIREPLUMBER_DIR = f"{PI_HOME}/.config/wireplumber/wireplumber.conf.d"
+    PI_CONFIG_DIR = f"{PI_HOME}/.config/ai-terminal"
+    DROPIN = f"{UNIT_DIR}/{SERVER_UNIT.name}.d"
+    REVISION_CONF = f"{DROPIN}/revision.conf"
+    KIOSK_STAMP = f"{UNIT_DIR}/.kiosk-launch.stamp"
+    PANEL_RESOURCES = _build_panel_resources()
+    RESOURCES = _build_resources(PANEL_RESOURCES)
+    _PANEL_COOKIES_CMD = _build_panel_cookies_cmd()
+    PROBES = _build_probes()
 
 
 # --------------------------------------------------------------------------
@@ -1025,11 +1127,16 @@ def install_plan(host: str) -> tuple[Step, ...]:
     account is a no-op, and `mic_setup.sh` sets registers to constants. So the
     phase run twice produces the same table, which `deploy_check` pins.
     """
+    sync_cmd = (
+        f"cd {PI_DIR} && {UV} sync && mkdir -p {PI_DIR}/.venv && "
+        f"printf '%s\\n' {UV_LOCK_DIGEST!r} > {UV_LOCK_STAMP}"
+        if UV_LOCK_DIGEST else f"cd {PI_DIR} && {UV} sync"
+    )
     return (
         Step("the packages the monitor and the panel need",
              remote(host, f"sudo apt-get install -y {' '.join(PACKAGES)}")),
         Step("the project's own dependencies",
-             remote(host, f"cd {PI_DIR} && {UV} sync")),
+             remote(host, sync_cmd)),
         Step("linger, without which this is not a kiosk",
              remote(host, f"sudo loginctl enable-linger {PI_USER}")),
         # mic_setup.sh re-reads 0x19 and 0x0C from inside a capture on its way
@@ -1138,9 +1245,19 @@ def deploy_plan(host: str,
              verify=lambda code, out:
                  None if _model(code, out)[0] == OK
                  else f"{MODEL}: {_model(code, out)[1]}"),
-        Step("somewhere for the user units to live",
-             remote(host, f"mkdir -p {UNIT_DIR} {KANSHI_DIR} {LABWC_DIR} {WIREPLUMBER_DIR}")),
     ]
+    if UV_LOCK_DIGEST:
+        steps.append(Step(
+            "the project's dependencies, when uv.lock moved",
+            remote(host,
+                   f"if [ \"$(cat {UV_LOCK_STAMP} 2>/dev/null)\" != {UV_LOCK_DIGEST!r} ]; then "
+                   f"cd {PI_DIR} && {UV} sync --frozen && mkdir -p {PI_DIR}/.venv && "
+                   f"printf '%s\\n' {UV_LOCK_DIGEST!r} > {UV_LOCK_STAMP}; fi"),
+            when="uv.lock differs from the Pi's .venv/.uv-lock.stamp"))
+    steps.append(
+        Step("somewhere for the user units to live",
+             remote(host, f"mkdir -p {UNIT_DIR} {KANSHI_DIR} {LABWC_DIR} {WIREPLUMBER_DIR}"))
+    )
     for row in RESOURCES:
         if not row.copy:
             continue
@@ -1503,13 +1620,61 @@ PHASES: dict[str, Callable[..., tuple[Step, ...]]] = {
 # running it
 # --------------------------------------------------------------------------
 
-def resolve(host: str) -> str:
-    """The first name that answers, said out loud.
+def ssh_config_user(host: str) -> str | None:
+    """Resolve `user` from OpenSSH client config (`ssh -G`) for `host`."""
+    try:
+        done = subprocess.run(("ssh", "-G", host), capture_output=True,
+                              text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    for line in done.stdout.splitlines():
+        if line.startswith("user "):
+            val = line.split(" ", 1)[1].strip()
+            if val:
+                return val
+    return None
 
-    `pi2` resolves on the Pi's own LAN and not necessarily from the Mac, where
-    `raspberrypi.local` does — README.md:1877-1879 says so and every block still says
-    `pi2`. A raw `Could not resolve hostname` in the middle of phase three
-    costs more than a line at the top.
+
+def _configure_live_user(original: str, resolved: str) -> None:
+    """Detect the remote account and `$HOME` on `resolved` and update paths."""
+    explicit_user = configured_user(resolved) or configured_user(original)
+    explicit_home = configured_home()
+    if explicit_user and explicit_home:
+        configure_user(explicit_user, explicit_home)
+        return
+    try:
+        done = subprocess.run(
+            remote(resolved, 'printf "%s\\n%s\\n" "$(id -un)" "$HOME"'),
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    if done is not None and done.returncode == 0:
+        lines = [ln.strip() for ln in done.stdout.splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            remote_user, remote_home = lines[0], lines[1]
+            user = explicit_user or remote_user
+            home = explicit_home or (
+                remote_home if user == remote_user else f"/home/{user}"
+            )
+            configure_user(user, home)
+            return
+    fallback_user = (
+        explicit_user
+        or ssh_config_user(original)
+        or ssh_config_user(resolved)
+        or DEFAULT_USER
+    )
+    configure_user(fallback_user, explicit_home)
+
+
+def resolve(host: str) -> str:
+    """The first name that answers, with remote account paths synced to it.
+
+    Bare hostnames resolve inside the Pi's LAN while mDNS `.local` names
+    answer from a laptop on the same segment. Checking both upfront avoids a
+    mid-phase `Could not resolve hostname` failure.
     """
     bare = host.split("@")[-1]
     for candidate in (bare, f"{bare}.local"):
@@ -1517,7 +1682,9 @@ def resolve(host: str) -> str:
             socket.getaddrinfo(candidate, 22)
         except OSError:
             continue
-        return host.replace(bare, candidate)
+        resolved = host.replace(bare, candidate)
+        _configure_live_user(host, resolved)
+        return resolved
     raise SystemExit(f"neither {bare} nor {bare}.local resolves from here")
 
 
@@ -1651,9 +1818,12 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("phase", nargs="*", choices=tuple(PHASES) + ("is-behind",),
                         help="any number of phases, always run in the order a "
                              "full run takes them in; the default is all four")
-    parser.add_argument("--host", default="pi2",
+    parser.add_argument("--host", default=default_host(),
                         help="the Pi, resolved to .local if the bare name "
-                             "does not answer (default: pi2)")
+                             "does not answer (default: $PI_HOST or raspberrypi)")
+    parser.add_argument("--user", default=None,
+                        help="login account on the Pi (default: $PI_USER, "
+                             "user@host, or probed from the Pi)")
     parser.add_argument("--dry-run", action="store_true", help="print plan")
     parser.add_argument("--is-behind", action="store_true",
                         help="check if Pi revision is behind latest deployed commit")
@@ -1662,11 +1832,20 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _target_host(args: argparse.Namespace) -> str:
+    explicit_user = args.user or configured_user(args.host)
+    configure_user(explicit_user or DEFAULT_USER, configured_home())
+    if explicit_user and "@" not in args.host:
+        return f"{explicit_user}@{args.host}"
+    return args.host
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse(argv)
+    target = _target_host(args)
     if "is-behind" in args.phase or args.is_behind:
-        return _check_behind(args)
-    if args.if_behind and _skip_if_current(args):
+        return _check_behind(args, target)
+    if args.if_behind and _skip_if_current(args, target):
         return 0
     order = [name for name in PHASES if name in args.phase] or list(PHASES)
     if args.phase and order != args.phase:
@@ -1674,14 +1853,14 @@ def main(argv: list[str] | None = None) -> int:
               "run takes them in, not the order they were asked for")
 
     if args.dry_run:
-        host = args.host
+        host = target
         print(f"host: {host}, not resolved — this is a dry run")
         for name in order:
             plan = restart_plan(host) if name == "restart" else PHASES[name](host)
             show(plan, name)
         return 0
 
-    host = resolve(args.host)
+    host = resolve(target)
     print(f"host: {host} answered")
     # Sampled here rather than in the restart branch below, because deploy
     # writes both of these files two phases earlier: read afterwards they are
@@ -1728,11 +1907,12 @@ def main(argv: list[str] | None = None) -> int:
     return failed
 
 
-def _check_behind(args: argparse.Namespace) -> int:
+def _check_behind(args: argparse.Namespace, target: str | None = None) -> int:
+    raw_host = target or args.host
     if args.dry_run:
-        print(f"host: {args.host}, not resolved — dry run is-behind")
+        print(f"host: {raw_host}, not resolved — dry run is-behind")
         return 0
-    host = resolve(args.host)
+    host = resolve(raw_host)
     running = get_pi_revision(host)
     latest = latest_deployed_commit()
     if running is None:
@@ -1746,11 +1926,12 @@ def _check_behind(args: argparse.Namespace) -> int:
     return 0
 
 
-def _skip_if_current(args: argparse.Namespace) -> bool:
+def _skip_if_current(args: argparse.Namespace, target: str | None = None) -> bool:
+    raw_host = target or args.host
     if args.dry_run:
-        print(f"host: {args.host}, not resolved — dry run --if-behind")
+        print(f"host: {raw_host}, not resolved — dry run --if-behind")
         return False
-    host = resolve(args.host)
+    host = resolve(raw_host)
     running = get_pi_revision(host)
     latest = latest_deployed_commit()
     if running is not None and not is_pi_behind(running):
@@ -1832,12 +2013,13 @@ def is_pi_behind(
     return True
 
 
-def get_pi_revision(host: str = "pi2") -> str | None:
+def get_pi_revision(host: str | None = None) -> str | None:
     """Query AI_TERMINAL_REVISION from systemd Environment on the Pi."""
+    raw = host if host is not None else default_host()
     try:
-        target = resolve(host)
+        target = resolve(raw)
     except (SystemExit, OSError):
-        target = host
+        target = raw
     code, out = spawn(Step("query pi revision",
                            remote(target, "systemctl --user show ai-terminal -p Environment 2>&1")),
                       timeout=10)

@@ -96,6 +96,11 @@ JS = SRC / "live" / "static" / "js"
 
 sys.path.insert(0, str(ROOT / "src"))
 
+# Scrub deploy host/user overrides from the developer's shell so the offline
+# suite always tests the shipped baseline (`raspberrypi`, `pi`, `/home/pi`).
+for _k in ("PI_HOST", "PI_USER", "PI_HOME"):
+    os.environ.pop(_k, None)
+
 # Importing the server reads .env to say what is missing from it, and on a
 # machine that is not the one it runs on that is a dozen lines of red above a
 # suite whose output is meant to be read. Nothing is called; only the route
@@ -103,6 +108,9 @@ sys.path.insert(0, str(ROOT / "src"))
 logging.getLogger("ai_terminal.live.main").setLevel(logging.CRITICAL)
 
 import pi_deploy  # noqa: E402
+pi_deploy.DOTENV_PATH = ROOT / ".nonexistent-deploy-check-env"
+pi_deploy.configure_user(pi_deploy.DEFAULT_USER)
+
 from ai_terminal import wake  # noqa: E402
 from ai_terminal.live import main as server  # noqa: E402
 
@@ -120,9 +128,10 @@ _GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
 def _git_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in _GIT_SCRUB}
 
-# Where the deploy puts this directory on the Pi. The units say it, the
-# README's rsync writes it, and it is the prefix that turns a path inside a
-# unit back into a path inside this repo.
+# Where the deploy puts this directory on the Pi. The units spell `%h/ai-terminal`
+# so systemd resolves the logged-in user's home at runtime, and `pi_deploy`
+# expands `%h` against `PI_HOME` (`/home/pi` in the baseline suite).
+UNIT_PI_DIR = "%h/ai-terminal"
 PI_DIR = "/home/pi/ai-terminal"
 
 # The README heading the install procedure lives under. The presence checks
@@ -424,14 +433,16 @@ def quickstart_cases(readme: str) -> None:
                              cwd=ROOT, capture_output=True,
                              env=_git_env()).returncode
     check("and git ignores a .env there", ignored, 0)
-    # The failure the old sentence set up, stated as a case so it cannot come
-    # back as a helpful simplification: one directory up is a different
-    # project's parent, git tracks it, and the server never opens it.
+    # In a monorepo parent checkout `ROOT.parent/.env` is inside git and not
+    # ignored (exit 1); in a standalone clone `ROOT` is the repo root itself,
+    # so `ROOT.parent/.env` is outside the repository (exit 128). Either way it
+    # is never ignored by this repo's `.gitignore` (never exit 0).
     above = subprocess.run(
         ["git", "check-ignore", "-q", str(ROOT.parent / ".env")],
         cwd=ROOT, capture_output=True, env=_git_env()).returncode
-    check("while one left in the workspace root above it would be committable",
-          above, 1, str(ROOT.parent))
+    want_above = 128 if (ROOT / ".git").exists() else 1
+    check("while one left in the directory above it is outside this .gitignore",
+          above, want_above, str(ROOT.parent))
 
 
 def unit_cases() -> None:
@@ -457,10 +468,10 @@ def unit_cases() -> None:
     check("it restarts, because a stopped monitor looks like silence",
           one(u, "Service", "Restart"), "always")
     check("it runs from the directory the rsync writes",
-          one(u, "Service", "WorkingDirectory"), PI_DIR)
+          one(u, "Service", "WorkingDirectory"), UNIT_PI_DIR)
     check("it configures the codec before opening the stream",
           one(u, "Service", "ExecStartPre"),
-          f"/bin/bash {PI_DIR}/tools/mic_setup.sh")
+          f"/bin/bash {UNIT_PI_DIR}/tools/mic_setup.sh")
 
     argv = (one(u, "Service", "ExecStart") or "").split()
     # Out of the server's unit and no longer out of a fenced block in the
@@ -499,7 +510,7 @@ def server_unit_cases() -> None:
     check("it restarts, because a stopped server is a panel saying Offline",
           one(u, "Service", "Restart"), "always")
     check("it runs from the directory the rsync writes",
-          one(u, "Service", "WorkingDirectory"), PI_DIR)
+          one(u, "Service", "WorkingDirectory"), UNIT_PI_DIR)
     env_vars = [tok for env in every(u, "Service", "Environment") for tok in env.split()]
     check("the server unit sets Environment=ENABLE_MANAGEMENT_ROUTES=1",
           "ENABLE_MANAGEMENT_ROUTES=1" in env_vars, True)
@@ -583,7 +594,7 @@ def command_cases() -> None:
     # there, so the path only exists if it is this directory's own. The README
     # named `~/models/` for a while, which nothing in the repo creates.
     model = str(args.models[0])
-    under = model.removeprefix(PI_DIR + "/")
+    under = model.removeprefix(UNIT_PI_DIR + "/")
     check("and the model is a file this repo ships, at that path",
           under != model and (ROOT / under).is_file(), True, under)
 
@@ -784,7 +795,7 @@ def debug_port_cases(readme: str) -> None:
           len(forward), 1, str(forward))
     local, remote_port, host = forward[0] if forward else ("", "", "")
     check("run from the Mac at the Pi, which is the direction that is missing",
-          host, "pi2")
+          host, "raspberrypi.local")
     check("onto the port the kiosk opens there", remote_port, str(DEBUG_PORT))
     # The two ends need not agree — the devtools endpoint rewrites
     # webSocketDebuggerUrl out of the request's Host header — and on a Mac
@@ -1118,7 +1129,7 @@ def procedure_cases(readme: str) -> None:
     print("\nthe procedure a person follows on the Pi")
     files = sorted(p.name for p in DEPLOY.iterdir() if p.is_file() and p.suffix != ".md")
     units = [f for f in files if f.endswith(".service")]
-    copied = re.findall(r"scp (deploy/\S+) pi2:", readme)
+    copied = re.findall(r"scp (deploy/\S+) raspberrypi\.local:", readme)
     check("every file in deploy/ is copied by some line of the procedure",
           [f for f in files
            if not any(fnmatch(f"deploy/{f}", p) for p in copied)], [],
@@ -1453,9 +1464,12 @@ def derivation_cases(readme: str) -> None:
               value in source, False, value)
     exec_start = one(unit(WAKE_UNIT), "Service", "ExecStart") or ""
     check("the model is the one the unit's --model names",
-          pi_deploy.MODEL, pi_deploy.flag(exec_start, "--model"))
+          pi_deploy.MODEL,
+          pi_deploy.expand_home(pi_deploy.flag(exec_start, "--model") or ""))
     check("so changing the unit moves the plan with it",
-          pi_deploy.flag(exec_start.replace("ls128", "kw512"), "--model"),
+          pi_deploy.expand_home(
+              pi_deploy.flag(exec_start.replace("ls128", "kw512"), "--model")
+              or ""),
           pi_deploy.MODEL.replace("ls128", "kw512"))
     check("the deploy stats that path rather than trusting the transfer",
           any(pi_deploy.MODEL in " ".join(s.argv)
@@ -1485,7 +1499,7 @@ def derivation_cases(readme: str) -> None:
     # single source would make this comparison vacuous, and the two costs are
     # not symmetrical: a README that has drifted is a person pasting a
     # `--delete` without `--exclude 'sessions.db*'`.
-    block = re.search(r"rsync -a --delete \\\n(.*?)\n\s*~/Documents",
+    block = re.search(r"rsync -a --delete \\\n(.*?)\n\s*~/",
                       readme, re.S)
     written = re.findall(r"--exclude '?([^'\s]+)'?", block.group(1) if block
                          else "")
@@ -1516,6 +1530,11 @@ def ir_cases(readme: str) -> None:
     level.
     """
     print("\nthe shipped impulse responses, and the README's figures for them")
+    rir_dir = ROOT / "training" / "rirs"
+    if not all((rir_dir / f"{n}.wav").is_file()
+               for n in ("kitchen_panel", "kitchen_usb")):
+        print("   skipped: training/rirs/*.wav are gitignored in public clones")
+        return
     sys.path.insert(0, str(ROOT / "tools"))
     import measure_ir
     import numpy as np
@@ -5548,6 +5567,84 @@ def google_home_credentials_cases() -> None:
               [f"the Google Home credentials: home-mcp-token.json ({t_only.stat().st_size} bytes)"])
 
 
+def portability_cases() -> None:
+    print("\nuser-agnostic units, standalone excludes, .env host config, and uv.lock stamp")
+    # 1. User units use systemd's %h specifier rather than hardcoding /home/pi
+    for svc in sorted(DEPLOY.glob("*.service")):
+        non_comment = [ln for ln in svc.read_text().splitlines()
+                       if ln.strip() and not ln.lstrip().startswith("#")]
+        check(f"{svc.name} contains no hardcoded /home/pi directive",
+              any("/home/pi" in ln for ln in non_comment), False)
+
+    # 2. Standalone repo excludes keep git history and agent dirs off the SD card
+    for excluded_dir in (".git", ".claude", ".agents"):
+        check(f"{excluded_dir} is excluded from the Pi rsync",
+              excluded_dir in pi_deploy.EXCLUDES, True)
+
+    # 3. Dynamic user reconfiguration updates paths, probes, and plans
+    try:
+        pi_deploy.configure_user("alice")
+        check("configure_user updates PI_DIR, UV, MODEL, and UNIT_DIR",
+              (pi_deploy.PI_DIR, pi_deploy.UV, pi_deploy.UNIT_DIR),
+              ("/home/alice/ai-terminal", "/home/alice/.local/bin/uv",
+               "/home/alice/.config/systemd/user"))
+        check("deploy_plan targets the configured user's paths",
+              any("alice@pi:/home/alice/ai-terminal/" in " ".join(s.argv)
+                  for s in pi_deploy.deploy_plan("alice@pi")), True)
+        check("install_plan lingers the configured user",
+              any("enable-linger alice" in " ".join(s.argv)
+                  for s in pi_deploy.install_plan("alice@pi")), True)
+        linger_probe = next(p for p in pi_deploy.PROBES if "linger" in p.name)
+        check("PROBES refresh for the configured user",
+              "show-user alice" in linger_probe.command, True)
+    finally:
+        pi_deploy.configure_user(pi_deploy.DEFAULT_USER)
+
+    # 4. Host and user configuration precedence (--host > env > .env > raspberrypi)
+    with tempfile.TemporaryDirectory() as tmp:
+        dotenv_file = Path(tmp) / ".env"
+        check("default_host falls back to raspberrypi when unset",
+              pi_deploy.default_host(dotenv_file), "raspberrypi")
+        dotenv_file.write_text("PI_HOST=my-pi.local\nPI_USER=bob\n")
+        check("default_host reads PI_HOST from local .env",
+              pi_deploy.default_host(dotenv_file), "my-pi.local")
+        check("configured_user reads PI_USER from local .env",
+              pi_deploy.configured_user("my-pi.local", dotenv_file), "bob")
+        check("user@host prefix overrides PI_USER from .env",
+              pi_deploy.configured_user("carol@my-pi.local", dotenv_file), "carol")
+        os.environ["PI_HOST"] = "env-pi.local"
+        os.environ["PI_USER"] = "envuser"
+        try:
+            check("PI_HOST env overrides local .env",
+                  pi_deploy.default_host(dotenv_file), "env-pi.local")
+            check("PI_USER env overrides local .env",
+                  pi_deploy.configured_user("env-pi.local", dotenv_file), "envuser")
+            parsed_cli = pi_deploy.parse(["--host", "cli-pi.local"])
+            check("--host CLI overrides PI_HOST env",
+                  parsed_cli.host, "cli-pi.local")
+        finally:
+            os.environ.pop("PI_HOST", None)
+            os.environ.pop("PI_USER", None)
+
+    # 5. Conditional uv sync --frozen on uv.lock digest in deploy_plan & install_plan
+    check("UV_LOCK_DIGEST is a 64-char sha256 hex digest",
+          len(pi_deploy.UV_LOCK_DIGEST), 64)
+    deploy_steps = pi_deploy.deploy_plan("raspberrypi")
+    uv_steps = [s for s in deploy_steps if "uv.lock moved" in s.name]
+    check("deploy_plan includes conditional uv sync --frozen step",
+          len(uv_steps), 1)
+    uv_cmd = " ".join(uv_steps[0].argv)
+    check("conditional uv sync compares UV_LOCK_STAMP against UV_LOCK_DIGEST and writes stamp",
+          pi_deploy.UV_LOCK_STAMP in uv_cmd
+          and pi_deploy.UV_LOCK_DIGEST in uv_cmd
+          and "sync --frozen" in uv_cmd, True)
+    install_uv = next(s for s in pi_deploy.install_plan("raspberrypi")
+                      if "own dependencies" in s.name)
+    check("install_plan also records UV_LOCK_DIGEST into UV_LOCK_STAMP",
+          pi_deploy.UV_LOCK_STAMP in " ".join(install_uv.argv)
+          and pi_deploy.UV_LOCK_DIGEST in " ".join(install_uv.argv), True)
+
+
 def main() -> None:
     real_metrics = ROOT / "tst_metrics.jsonl"
     metrics_size_before = real_metrics.stat().st_size if real_metrics.exists() else 0
@@ -5596,6 +5693,7 @@ def main() -> None:
     open_verified_stage_cases()
     behind_cases()
     google_home_credentials_cases()
+    portability_cases()
     metrics_size_after = real_metrics.stat().st_size if real_metrics.exists() else 0
     check("deploy_check suite does not mutate real tst_metrics.jsonl (#733)",
           metrics_size_after, metrics_size_before)

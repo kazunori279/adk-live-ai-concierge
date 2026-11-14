@@ -18,17 +18,17 @@ Description=AI Terminal live voice agent
 # reached per request with Restart= underneath.
 
 [Service]
-WorkingDirectory=/home/pi/ai-terminal
+WorkingDirectory=%h/ai-terminal
 # Management routes (/api/gws/logout, /api/forget/{user_id}, /api/wake) are
 # disabled by default to protect demo environments (e.g. Cloud Run). The Pi
 # kiosk requires them for full functionality.
 Environment=ENABLE_MANAGEMENT_ROUTES=1 AI_TERMINAL_IS_PI=1
-# Absolute, because systemd's PATH has no ~/.local/bin, and the same uv the
-# monitor's unit spells so that both run out of the environment `uv sync`
+# Expanded via %h because systemd's PATH has no ~/.local/bin, and the same uv
+# the monitor's unit spells so that both run out of the environment `uv sync`
 # built. No --port: `live-server` already defaults to 8000, and 8000 is
 # written in the kiosk's URL, the monitor's --webhook and the tunnel's -L
 # forward. A flag here would be a fourth place for those to disagree.
-ExecStart=/home/pi/.local/bin/uv run live-server
+ExecStart=%h/.local/bin/uv run live-server
 # `uv run` is not the server, it is a parent that waits for one and reports
 # what became of it. uvicorn handles SIGTERM, shuts the app down, and then
 # re-raises the signal with the default handler back in place

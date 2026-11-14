@@ -105,11 +105,9 @@ hardware, see [deploy/CLOUD_RUN.md](deploy/CLOUD_RUN.md).
 
 ### Configuration
 
-`2026-0906-raspi-ai-terminal/.env`, beside `pyproject.toml`. That directory and
-not the one above it: `main.py:25` reads the file from there, and
-`.gitignore:7` is what keeps it out of commits. The workspace root is a
-different directory with no such line, so a `.env` left up there is both unread
-and committable — which is why the `cp` above is the way to make one.
+`adk-live-ai-concierge/.env`, beside `pyproject.toml`. `main.py:25` reads the
+file from there, and `.gitignore:7` keeps it out of commits, which is why the
+`cp` above is the way to make one.
 
 | Key | |
 |---|---|
@@ -133,6 +131,7 @@ and committable — which is why the `cp` above is the way to make one.
 | `BROWSE_MODEL` | picks each browser step, defaults to `gemini-4-hydrogen` on `global` |
 | `BROWSE_MAX_STEPS`, `BROWSE_BUDGET_S`, `BROWSE_ALLOWLIST`, `BROWSE_CHROMIUM` | the rest of the browser tool — see [The browser tool](#the-browser-tool) |
 | `ALLOWED_HOSTS` | names this server answers to besides `localhost` and `127.0.0.1`, which is what both topologies use; anything else is refused with a 400 before it reaches a route |
+| `PI_HOST`, `PI_USER` | target host and login account for `tools/pi_deploy.py` on your laptop; defaults to `raspberrypi` (resolved to `.local` when needed) and the remote SSH account (`pi` in `--dry-run`) |
 
 `LIVE_MODEL` switches response modality on its own: a name containing
 `native-audio`, ending in `-live`, or Gemini 3.x live runs in AUDIO mode with
@@ -1540,20 +1539,25 @@ uv run python tools/cloud_run_deploy.py deploy --dry-run
 
 ### Running it on the Pi
 
-First get the code there. This directory lives inside a larger workspace repo,
-so the Pi gets an `rsync` of the directory rather than a clone:
+First get the code there. `tools/pi_deploy.py` automates the transfer, runs
+`uv sync --frozen` whenever `uv.lock` differs from `.venv/.uv-lock.stamp` on
+the Pi, installs the user units (which use systemd's `%h` home specifier so any
+login account works unchanged), and stamps the deployed revision. Set `PI_HOST`
+(and `PI_USER` if needed) in your local `.env` or pass `--host` on the command
+line; the block below shows the underlying steps by hand:
 
 ```bash
 rev=$(git -C ~/adk-live-ai-concierge rev-parse --short HEAD)
-[ -z "$(git -C ~/adk-live-ai-concierge status --porcelain \
-  -- 2026-0906-raspi-ai-terminal)" ] || rev="$rev-dirty"
+[ -z "$(git -C ~/adk-live-ai-concierge status --porcelain -- .)" ] \
+  || rev="$rev-dirty"
 built=$(git -C ~/adk-live-ai-concierge show -s --format=%cI HEAD)
 rsync -a --delete \
+  --exclude .git --exclude .claude --exclude .agents \
   --exclude .venv --exclude .env --exclude gws_cache --exclude __pycache__ \
   --exclude screensaver --exclude 'sessions.db*' --exclude '*.png' \
   ~/adk-live-ai-concierge/ \
-  pi2:~/ai-terminal/
-ssh pi2 "cd ~/ai-terminal && uv sync &&
+  raspberrypi.local:~/ai-terminal/
+ssh raspberrypi.local "cd ~/ai-terminal && uv sync &&
   mkdir -p ~/.config/systemd/user/ai-terminal.service.d &&
   printf '[Service]\nEnvironment=AI_TERMINAL_REVISION=%s\nEnvironment=AI_TERMINAL_BUILT=%s\n' \
     '$rev' '$built' \
@@ -1561,9 +1565,11 @@ ssh pi2 "cd ~/ai-terminal && uv sync &&
   systemctl --user daemon-reload && systemctl --user restart ai-terminal"
 ```
 
-.env is excluded because the Pi's differs — see *Credentials on a headless
-Pi* below — and `gws_cache` because it is a cache of the account's own
-documents and belongs to whichever machine fetched them.
+`.git`, `.claude`, and `.agents` stay on the laptop so git objects and local
+agent configs are not written to the SD card. `.env` is excluded because the
+Pi's differs — see *Credentials on a headless Pi* below — and `gws_cache`
+because it is a cache of the account's own documents and belongs to whichever
+machine fetched them.
 
 `screensaver` and `sessions.db*` are excluded because neither belongs to the
 repo and both live at the destination. That destination is the unit's
@@ -1613,8 +1619,8 @@ need a second install path in an installer whose whole table is
 outside the session.
 
 ```bash
-scp deploy/ai-terminal.service pi2:~/.config/systemd/user/
-ssh pi2 'systemctl --user daemon-reload &&
+scp deploy/ai-terminal.service raspberrypi.local:~/.config/systemd/user/
+ssh raspberrypi.local 'systemctl --user daemon-reload &&
   systemctl --user enable --now ai-terminal'
 ```
 
@@ -1793,7 +1799,7 @@ from the repo's own unit, with `--remote-debugging-port` on the command line.
 for last night's tree.
 
 ```bash
-uv run python tools/pi_deploy.py --host pi2 deploy restart
+uv run python tools/pi_deploy.py deploy restart
 ssh raspberrypi.local 'systemctl --user show ai-terminal -p Environment'
 ```
 
@@ -1986,19 +1992,18 @@ The server is still the Mac's, so `revision` from `/api/config` still describes
 the Mac's checkout, which is the correct answer: the Mac is what answers the
 questions. The Pi's copy answers nothing — it only listens.
 
-Run it in this order. `pi2` is the Pi — `raspberrypi.local` over mDNS, or an alias in
-`~/.ssh/config`; the bare name resolves on the Pi's own LAN and not
-necessarily on the Mac.
+Run it in this order. `raspberrypi.local` reaches the Pi over mDNS (or use an
+alias in `~/.ssh/config`).
 
 **The key hop first**, because the tunnel is an unattended
 `ssh -N -L 8000:127.0.0.1:8000` and the units start the moment they are
 enabled:
 
 ```bash
-ssh pi2 'ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" \
-  -C ai-terminal-tunnel@pi2'
-ssh pi2 cat .ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-ssh pi2 'ssh-keyscan -H <mac> >> ~/.ssh/known_hosts'
+ssh raspberrypi.local 'ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" \
+  -C ai-terminal-tunnel@raspberrypi'
+ssh raspberrypi.local cat .ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+ssh raspberrypi.local 'ssh-keyscan -H <mac> >> ~/.ssh/known_hosts'
 ```
 
 The `ssh-keyscan` is not optional. `BatchMode=yes` in the unit suppresses the
@@ -2028,9 +2033,9 @@ showing the bare desktop.
 session's compositor:
 
 ```bash
-ssh pi2 'mkdir -p ~/.config/systemd/user ~/.config/environment.d'
-scp deploy/ai-terminal-*.service pi2:~/.config/systemd/user/
-ssh pi2 'echo AI_TERMINAL_DEV_HOST=alex@<mac> \
+ssh raspberrypi.local 'mkdir -p ~/.config/systemd/user ~/.config/environment.d'
+scp deploy/ai-terminal-*.service raspberrypi.local:~/.config/systemd/user/
+ssh raspberrypi.local 'echo AI_TERMINAL_DEV_HOST=alex@<mac> \
     > ~/.config/environment.d/ai-terminal.conf &&
   systemctl --user daemon-reload &&
   systemctl --user enable --now ai-terminal-tunnel ai-terminal-kiosk'
@@ -2049,8 +2054,8 @@ AI_TERMINAL` — without it the tunnel exits on the first start.
 **Then the journal**, which the Pi does not keep by default:
 
 ```bash
-scp deploy/50-ai-terminal-journal.conf pi2:/tmp/
-ssh pi2 'sudo install -D -o root -g root -m 644 -t \
+scp deploy/50-ai-terminal-journal.conf raspberrypi.local:/tmp/
+ssh raspberrypi.local 'sudo install -D -o root -g root -m 644 -t \
     /etc/systemd/journald.conf.d /tmp/50-ai-terminal-journal.conf &&
   sudo systemctl restart systemd-journald && sudo journalctl --flush'
 ```
@@ -2209,7 +2214,7 @@ uv run python tools/pi_deploy.py
 ```
 
 **One process, and `deploy restart` is enough of one.** Whether the unit is
-stale is sampled once at `pi_deploy.py:1535-1536`, above the phase loop,
+stale is sampled once at `pi_deploy.py:1872-1874`, above the phase loop,
 because the deploy overwrites the very file the answer is read from. Since
 #200 `phase` is a list, so the pair a code change actually wants is a single
 run and the sample stays where it has to be. Two *processes* are still wrong,
@@ -2226,8 +2231,8 @@ developer's Pi, or a panel you do not want blanked mid-deploy — the two
 commands the installer runs are:
 
 ```bash
-scp deploy/ai-terminal-kiosk.service pi2:~/.config/systemd/user/
-ssh pi2 'systemctl --user daemon-reload &&
+scp deploy/ai-terminal-kiosk.service raspberrypi.local:~/.config/systemd/user/
+ssh raspberrypi.local 'systemctl --user daemon-reload &&
   systemctl --user restart ai-terminal-kiosk'
 ```
 
@@ -2242,7 +2247,7 @@ loopback and is not on the LAN. Confirm that on the device rather than trusting
 this line — on any boot, since the port is always up:
 
 ```bash
-ssh pi2 'ss -ltn | grep 9222'      # 127.0.0.1:9222, and never 0.0.0.0:9222
+ssh raspberrypi.local 'ss -ltn | grep 9222'      # 127.0.0.1:9222, and never 0.0.0.0:9222
 ```
 
 **It must not be put there.** `--remote-debugging-address=0.0.0.0`, typed once
@@ -2266,7 +2271,7 @@ Pi already runs is no help: `ai-terminal-tunnel.service` forwards the *Pi's*
 disabled.
 
 ```bash
-ssh -N -L 9333:127.0.0.1:9222 pi2
+ssh -N -L 9333:127.0.0.1:9222 raspberrypi.local
 ```
 
 9333 on this end and not 9222 because on a Mac 9222 is usually already
@@ -2288,11 +2293,11 @@ the running service. Instead, stop the kiosk unit, start a standard Chromium
 window targeting the kiosk profile, sign in interactively on the panel, close
 Chromium, and restart the kiosk unit:
 
-1. `ssh pi2 'systemctl --user stop ai-terminal-kiosk'`
-2. `ssh pi2 'WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 chromium --user-data-dir=$HOME/.cache/ai-terminal-kiosk --password-store=basic https://accounts.google.com'`
+1. `ssh raspberrypi.local 'systemctl --user stop ai-terminal-kiosk'`
+2. `ssh raspberrypi.local 'WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 chromium --user-data-dir=$HOME/.cache/ai-terminal-kiosk --password-store=basic https://accounts.google.com'`
 3. Sign in on the touch screen.
 4. Close Chromium.
-5. `ssh pi2 'systemctl --user start ai-terminal-kiosk'`
+5. `ssh raspberrypi.local 'systemctl --user start ai-terminal-kiosk'`
 
 #### Credentials on a headless Pi
 
@@ -2516,7 +2521,7 @@ Two more things fall out of attaching, both handled in `_release`:
 
 **On the Pi the deploy is what opens this port**, since #183:
 `deploy/ai-terminal-kiosk.service` is `copy=True, compare=True` in the
-installer's resource table (`pi_deploy.py:355-356`), so one
+installer's resource table (`pi_deploy.py:553-554`), so one
 `uv run python tools/pi_deploy.py` writes the unit and restarts the kiosk onto
 it. It was `copy=False` until then — read and never written, because writing
 it blanks the panel — and for six hours `--remote-debugging-port` sat in the
@@ -3115,18 +3120,18 @@ run whole stops on its last line with the code already copied.
 
 ```bash
 # 1. the ALSA route into the session's PipeWire graph, and i2c-tools for the mic HAT
-ssh pi2 'sudo apt-get install -y pipewire-alsa i2c-tools && wpctl status'
+ssh raspberrypi.local 'sudo apt-get install -y pipewire-alsa i2c-tools && wpctl status'
 
 # 2. the unit, the WirePlumber priority config, and the linger that keeps it up
-scp deploy/50-usb-mic.conf pi2:~/.config/wireplumber/wireplumber.conf.d/
-scp deploy/ai-terminal-wake.service pi2:~/.config/systemd/user/
-ssh pi2 'systemctl --user daemon-reload &&
+scp deploy/50-usb-mic.conf raspberrypi.local:~/.config/wireplumber/wireplumber.conf.d/
+scp deploy/ai-terminal-wake.service raspberrypi.local:~/.config/systemd/user/
+ssh raspberrypi.local 'systemctl --user daemon-reload &&
   systemctl --user enable --now ai-terminal-wake &&
-  sudo loginctl enable-linger pi'
+  sudo loginctl enable-linger "$USER"'
 
 # 3. the microphone grant, before Chromium next starts
-scp deploy/ai-terminal-chromium-policy.json pi2:/tmp/
-ssh pi2 'sudo install -D -o root -g root -m 644 -t \
+scp deploy/ai-terminal-chromium-policy.json raspberrypi.local:/tmp/
+ssh raspberrypi.local 'sudo install -D -o root -g root -m 644 -t \
     /etc/chromium/policies/managed /tmp/ai-terminal-chromium-policy.json &&
   systemctl --user restart ai-terminal-kiosk'
 ```
@@ -3157,7 +3162,7 @@ Then verify it on the device, which is the only place any of this can be
 verified. Stand at the panel and say the phrase:
 
 ```bash
-ssh pi2 'journalctl --user -u ai-terminal-wake -f'
+ssh raspberrypi.local 'journalctl --user -u ai-terminal-wake -f'
 # 19:14:02  hey_gemini_ls128  0.951
 ```
 
@@ -3276,11 +3281,11 @@ distro's machinery, so a new card runs them whether or not this repo is on it.
 `pi_deploy.py` sends none of the three. Putting them back is by hand:
 
 ```bash
-ssh pi2 'mkdir -p ~/.config/kanshi ~/.config/labwc'
-scp deploy/kanshi-config pi2:~/.config/kanshi/config
-scp deploy/labwc-rc.xml pi2:~/.config/labwc/rc.xml
-scp deploy/99-touch-calibration.rules pi2:/tmp/
-ssh pi2 'sudo install -D -o root -g root -m 644 -t \
+ssh raspberrypi.local 'mkdir -p ~/.config/kanshi ~/.config/labwc'
+scp deploy/kanshi-config raspberrypi.local:~/.config/kanshi/config
+scp deploy/labwc-rc.xml raspberrypi.local:~/.config/labwc/rc.xml
+scp deploy/99-touch-calibration.rules raspberrypi.local:/tmp/
+ssh raspberrypi.local 'sudo install -D -o root -g root -m 644 -t \
     /etc/udev/rules.d /tmp/99-touch-calibration.rules &&
   sudo udevadm control --reload && sudo udevadm trigger'
 ```

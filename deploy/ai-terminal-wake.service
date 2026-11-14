@@ -17,9 +17,9 @@ Description=AI Terminal wake word monitor
 After=pipewire.service
 
 [Service]
-WorkingDirectory=/home/pi/ai-terminal
+WorkingDirectory=%h/ai-terminal
 # Configure the codec before opening the capture stream (#224).
-ExecStartPre=/bin/bash /home/pi/ai-terminal/tools/mic_setup.sh
+ExecStartPre=/bin/bash %h/ai-terminal/tools/mic_setup.sh
 # `--device pipewire` needs the pipewire-alsa package, which Raspberry Pi OS
 # does not install. Without it ALSA has no `pipewire` PCM at all, sounddevice
 # sees only the raw cards, and hw:2,0 is exclusive — so the monitor either
@@ -31,9 +31,9 @@ ExecStartPre=/bin/bash /home/pi/ai-terminal/tools/mic_setup.sh
 #
 # localhost:8000 is the agent on either topology: the server itself on the
 # shipped Pi, the tunnel to the Mac while developing against the panel.
-ExecStart=/home/pi/.local/bin/uv run wake \
+ExecStart=%h/.local/bin/uv run wake \
     --device pipewire \
-    --model /home/pi/ai-terminal/training/models/hey_gemini_ls128.onnx \
+    --model %h/ai-terminal/training/models/hey_gemini_ls128.onnx \
     --threshold 0.2 \
     --webhook http://localhost:8000/api/wake
 # The same `uv run` shape as the server's unit and the same 143 for the same
